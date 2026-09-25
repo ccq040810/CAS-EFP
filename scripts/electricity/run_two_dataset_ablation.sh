@@ -63,8 +63,13 @@ run_dataset() {
     run_one tsfm_point_C_confidence_asym --no-use_tsfm_uncertainty --use_tsfm_confidence \
       --use_asymmetric_loss --asymmetric_alpha 2.0 --asymmetric_direction auto \
       --sample_weight_mode confidence --sample_weight_lambda 1.0
+  elif [[ "$STAGE" == "stage3" ]]; then
+    # Ablation: fixed asymmetric loss without passing C to the tree. This
+    # isolates the value of the confidence feature from the loss itself.
+    run_one tsfm_point_fixed_asym_noC --no-use_tsfm_uncertainty --no-use_tsfm_confidence \
+      --use_asymmetric_loss --asymmetric_alpha 2.0 --asymmetric_direction auto
   else
-    echo "Usage: $0 [stage1|stage2]" >&2
+    echo "Usage: $0 [stage1|stage2|stage3]" >&2
     exit 2
   fi
 }

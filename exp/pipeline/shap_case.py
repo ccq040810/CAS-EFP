@@ -198,6 +198,7 @@ def export_shap_casebook_low_high(
     pred_prefix: Optional[str] = None,
     series_label: Optional[str] = None,
     pred_label_color: str = "#9467bd",  # purple
+    group_size: Optional[int] = None,
 ) -> None:
     """
     Save TWO figures per instance:
@@ -241,17 +242,30 @@ def export_shap_casebook_low_high(
     F = len(feat_list_raw)
     assert N == y_pred.shape[0] == X.shape[0] == shap_values.shape[0], "N mismatch"
     assert X.shape[1] == shap_values.shape[1] == F, f"F mismatch: X={X.shape[1]}, shap={shap_values.shape[1]}, feat={F}"
-    assert N % L == 0, f"N={N} not divisible by L={L}"
 
-    n_inst = N // L
-    Yt = _reshape_by_horizon(y_true, L)
-    Yh = _reshape_by_horizon(y_pred, L)
-    Yz = _reshape_by_horizon(X[:, tsfm_idx], L)
+    if group_size is None:
+        group_size = L
+    else:
+        group_size = int(group_size)
+        assert group_size > 0, f"group_size must be positive, got {group_size}"
+
+    usable = (N // group_size) * group_size
+    if usable != N:
+        y_true = y_true[:usable]
+        y_pred = y_pred[:usable]
+        X = X[:usable]
+        shap_values = shap_values[:usable]
+        N = usable
+
+    n_inst = N // group_size
+    Yt = _reshape_by_horizon(y_true, group_size)
+    Yh = _reshape_by_horizon(y_pred, group_size)
+    Yz = _reshape_by_horizon(X[:, tsfm_idx], group_size)
 
     if time_points is not None:
-        T = np.asarray(time_points)
+        T = np.asarray(time_points)[:N]
         assert T.shape[0] == N
-        T = T.reshape(-1, L)
+        T = T.reshape(-1, group_size)
     else:
         T = None
 
@@ -280,8 +294,8 @@ def export_shap_casebook_low_high(
         sv = shap_values[j]  # [F]
         x_row = X[j]         # [F]
 
-        fig = plt.figure(figsize=(13.6, 4.8))
-        gs = fig.add_gridspec(1, 2, width_ratios=[1.65, 1.0], wspace=0.28)
+        fig = plt.figure(figsize=(15.0, 5.2))
+        gs = fig.add_gridspec(1, 2, width_ratios=[1.8, 1.0], wspace=0.34)
         ax_wf = fig.add_subplot(gs[0, 0])
         ax_wave = fig.add_subplot(gs[0, 1])
 
@@ -301,19 +315,39 @@ def export_shap_casebook_low_high(
         )
 
         # ---- Right: waveform ----
-        x_axis = T[inst_i] if T is not None else np.arange(L)
+        x_axis = np.arange(L)
 
-        ax_wave.plot(x_axis, Yt[inst_i], label="True", color=C_TRUE, linewidth=1.9)
-        ax_wave.plot(x_axis, Yz[inst_i], label=series_label, color=C_TSF, linewidth=1.9)
-        ax_wave.plot(x_axis, Yh[inst_i], label="Hybrid", color=C_HYB, linewidth=2.8)
+        def _smooth_line(y: np.ndarray, window: int = 5) -> np.ndarray:
+            y = np.asarray(y, dtype=float)
+            if window <= 1 or y.size < window:
+                return y
+            kernel = np.ones(int(window), dtype=float) / float(window)
+            pad_left = window // 2
+            pad_right = window - 1 - pad_left
+            y_pad = np.pad(y, (pad_left, pad_right), mode="edge")
+            return np.convolve(y_pad, kernel, mode="valid")
+
+        y_true_plot = _smooth_line(Yt[inst_i], window=5)
+        y_tsfm_plot = _smooth_line(Yz[inst_i], window=5)
+        y_hyb_plot = _smooth_line(Yh[inst_i], window=5)
+
+        ax_wave.plot(x_axis, y_true_plot, label="True", color=C_TRUE, linewidth=1.9)
+        ax_wave.plot(x_axis, y_tsfm_plot, label=series_label, color=C_TSF, linewidth=1.9)
+        ax_wave.plot(x_axis, y_hyb_plot, label="FutureBoosting", color=C_HYB, linewidth=2.6)
 
         ax_wave.axvline(
-            x_axis[t_star], linestyle="--", linewidth=1.3, alpha=0.9, color="0.2"
+            x_axis[t_star], linestyle="--", linewidth=1.1, alpha=0.85, color="0.35"
         )
 
-        ax_wave.set_xlabel("Time" if T is not None else "Horizon step")
+        ax_wave.set_xlabel("")
         ax_wave.set_ylabel("Price")
-        ax_wave.grid(True, alpha=0.22, linewidth=0.9)
+        ax_wave.set_xticks([])
+        ax_wave.tick_params(axis="x", length=0)
+        ax_wave.grid(True, alpha=0.18, linewidth=0.8)
+        ax_wave.spines["top"].set_alpha(0.5)
+        ax_wave.spines["right"].set_alpha(0.5)
+        ax_wave.spines["left"].set_alpha(0.7)
+        ax_wave.spines["bottom"].set_alpha(0.7)
 
         ax_wave.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), frameon=False)
 

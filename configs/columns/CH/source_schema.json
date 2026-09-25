@@ -1,0 +1,16 @@
+[
+  {
+    "source_schema_names": [
+      "historical_target",
+      "dynamic_exogenous",
+      "domain_knowledge",
+      "known_future"
+    ],
+    "source_schema_map": {
+      "historical_target": ["clearing price (CNY/MWh)"],
+      "dynamic_exogenous": ["demand"],
+      "domain_knowledge": [],
+      "known_future": ["hour_of_day", "day_of_week", "is_holiday"]
+    }
+  }
+]

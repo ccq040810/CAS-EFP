@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+Dataset/
+Real-E/
+models/
+data/
+data_ch/
+results/
+*.parquet
+*.tar.gz
+*.pdf
+*.docx
+_*-extracted.txt
+tmp_electricity_*.json
+=*

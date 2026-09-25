@@ -5,6 +5,19 @@ import torch
 from torch.utils.data import Dataset
 from typing import Optional
 
+def project_unified_sources_to_legacy(df: pd.DataFrame) -> pd.DataFrame:
+    dff = df.copy()
+    if "source_1_historical_price" in dff.columns:
+        for c in ["clearing price (CNY/MWh)", "target", "OT", "y_Day-ahead Price [EUR/MWh]", "Day-ahead Price [EUR/MWh]"]:
+            if c in dff.columns:
+                dff[c] = dff["source_1_historical_price"]
+    if "source_2_dynamic_exogenous_load" in dff.columns:
+        for c in ["demand", "Ampirion Load Forecast", "Ampirion zonal load forecast", "total_Actual Total Load [MW] - BZN|DE-LU", "Actual Total Load [MW]"]:
+            if c in dff.columns:
+                dff[c] = dff["source_2_dynamic_exogenous_load"]
+    return dff
+
+
 class CovariateDatasetBenchmark(Dataset):
     def __init__(
         self,
@@ -42,14 +55,16 @@ class CovariateDatasetBenchmark(Dataset):
         self.std_target = None
         self.mean_cov = None
         self.std_cov = None
+        self.source_schema = None
+        self.source_schema_names = None
 
         self.__read_data__()
 
     def __read_data__(self):
         if self.dataset_file_path.endswith(".csv"):
-            df_raw = pd.read_csv(self.dataset_file_path)
+            df_raw = project_unified_sources_to_legacy(pd.read_csv(self.dataset_file_path))
         elif self.dataset_file_path.endswith(".parquet"):
-            df_raw = pd.read_parquet(self.dataset_file_path)
+            df_raw = project_unified_sources_to_legacy(pd.read_parquet(self.dataset_file_path))
         else:
             raise ValueError("Unknown data format")
 
@@ -60,13 +75,46 @@ class CovariateDatasetBenchmark(Dataset):
         else:
             self.time_all = None
 
-
         if self.target_columns is None:
             raise ValueError("target_columns must be provided")
 
         all_cols = list(self.target_columns)
         covar_cols = all_cols[:-1]      # 协变量
         tgt_col = all_cols[-1]          # 最后一列目标
+        self.source_schema = {
+            "historical_target": [tgt_col],
+            "dynamic_exogenous": list(covar_cols[: max(0, len(covar_cols) // 2)]),
+            "domain_knowledge": list(covar_cols[max(0, len(covar_cols) // 2):]),
+            "known_future": ["hour_of_day", "day_of_week", "is_holiday"],
+        }
+        self.source_schema_names = [
+            "historical_target",
+            "dynamic_exogenous",
+            "domain_knowledge",
+            "known_future",
+        ]
+
+        # 缺失值处理（因果）：协变量只向前填充（过去值），不做未来插值；
+        # 目标缺失保留 NaN（下游 table_to_xy_std 删除对应标签，TSFM 跳过非有限上下文）。
+        if "hour_of_day" in covar_cols and "hour_of_day" not in df_raw.columns and self.time_all is not None:
+            df_raw["hour_of_day"] = self.time_all.dt.hour + self.time_all.dt.minute / 60.0
+        if "day_of_week" in covar_cols and "day_of_week" not in df_raw.columns and self.time_all is not None:
+            df_raw["day_of_week"] = self.time_all.dt.dayofweek.astype(float)
+        if "is_holiday" in covar_cols and "is_holiday" not in df_raw.columns and self.time_all is not None:
+            try:
+                import chinese_calendar as calendar
+                df_raw["is_holiday"] = self.time_all.dt.date.map(lambda d: float(not calendar.is_workday(d)))
+            except Exception:
+                df_raw["is_holiday"] = 0.0
+
+        for c in covar_cols:
+            ser = pd.to_numeric(df_raw[c], errors="coerce")
+            if ser.isna().any():
+                ser = ser.ffill()
+            if ser.isna().all():
+                ser = pd.Series(np.zeros(len(df_raw)), index=df_raw.index)
+            df_raw[c] = ser
+        df_raw[tgt_col] = pd.to_numeric(df_raw[tgt_col], errors="coerce")
 
         # 提取数值矩阵
         covariate_all = df_raw[covar_cols].values.astype(float)  # [T, C_cov]

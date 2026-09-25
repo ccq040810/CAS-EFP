@@ -1,0 +1,17 @@
+[
+  {
+    "target_columns": [
+      "da_price",
+      "da_Local_Power_Output",
+      "da_Type_A_Power",
+      "da_Type_B_Power",
+      "da_GZ_HK_Interconnector",
+      "da_System_Load",
+      "da_West_to_East",
+      "hour_of_day",
+      "day_of_week",
+      "is_holiday",
+      "y"
+    ]
+  }
+]

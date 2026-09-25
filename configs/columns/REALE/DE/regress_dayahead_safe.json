@@ -1,0 +1,11 @@
+[
+  {
+    "target_columns": [
+      "genf_Scheduled Generation [MW] (D) - BZN|DE-LU",
+      "total_Day-ahead Total Load Forecast [MW] - BZN|DE-LU",
+      "hour_of_day",
+      "day_of_week",
+      "y_Day-ahead Price [EUR/MWh]"
+    ]
+  }
+]

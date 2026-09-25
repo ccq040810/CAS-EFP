@@ -182,7 +182,8 @@ def _build_rollout_meta(*, args) -> RolloutMeta:
     is_std = bool(getattr(args, "is_std", False))
     key_cols = ["anchor_time", "time", "h"] if is_std else ["time"]
     required_pred_cols = [f"pred_{m}_{v}" for m in models for v in mv_cols]
-    required_cols = key_cols + required_pred_cols
+    required_uncertainty_cols = [f"{c}_uncertainty" for c in required_pred_cols]
+    required_cols = key_cols + required_pred_cols + required_uncertainty_cols
 
     return RolloutMeta(
         tag=str(getattr(args, "tag", "pipeline")),
@@ -340,7 +341,7 @@ def _infer_missing_predictions(
             continue
 
         model = _load_model(model_name, meta.model_paths[model_name], meta.device)
-        pred_by_var = _predict_multivar(
+        pred_pack_by_var = _predict_multivar(
             df=df,
             mv_cols=meta.mv_cols,
             anchors=model_anchors,
@@ -355,7 +356,10 @@ def _infer_missing_predictions(
             output_size=len(base),
         )
         for var_name in meta.mv_cols:
-            new_cols[f"pred_{model_name}_{var_name}"] = pred_by_var[var_name]
+            pred_pack = pred_pack_by_var[var_name]
+            new_cols[f"pred_{model_name}_{var_name}"] = pred_pack["mean"]
+            if pred_pack.get("uncertainty") is not None:
+                new_cols[f"pred_{model_name}_{var_name}_uncertainty"] = pred_pack["uncertainty"]
 
     if new_cols:
         patch = pd.concat([patch.reset_index(drop=True), pd.DataFrame(new_cols)], axis=1)
@@ -481,14 +485,36 @@ def _parse_models(x: str) -> List[str]:
 
 def _parse_model_paths(x: str, models: List[str]) -> Dict[str, str]:
     parsed = json.loads(x)
-    return {m: parsed[m] for m in models}
+    if isinstance(parsed, list):
+        parsed = {item[0]: item[1] for item in parsed if isinstance(item, (list, tuple)) and len(item) >= 2}
+    if not isinstance(parsed, dict):
+        raise ValueError("tsfm_model_paths must be a JSON object mapping model name to checkpoint path")
+
+    normalized = {str(k).strip().lower(): v for k, v in parsed.items()}
+    missing = [m for m in models if m not in normalized]
+    if missing:
+        raise KeyError(f"Missing tsfm_model_paths for: {missing}. Available keys: {sorted(normalized.keys())}")
+    return {m: normalized[m] for m in models}
+
+
+def _project_unified_sources_to_legacy(df: pd.DataFrame) -> pd.DataFrame:
+    dff = df.copy()
+    if "source_1_historical_price" in dff.columns:
+        for c in ["clearing price (CNY/MWh)", "target", "OT", "y_Day-ahead Price [EUR/MWh]", "Day-ahead Price [EUR/MWh]"]:
+            if c in dff.columns:
+                dff[c] = dff["source_1_historical_price"]
+    if "source_2_dynamic_exogenous_load" in dff.columns:
+        for c in ["demand", "Ampirion Load Forecast", "Ampirion zonal load forecast", "total_Actual Total Load [MW] - BZN|DE-LU", "Actual Total Load [MW]"]:
+            if c in dff.columns:
+                dff[c] = dff["source_2_dynamic_exogenous_load"]
+    return dff
 
 
 def _read_table(path: str) -> pd.DataFrame:
     if path.endswith(".csv"):
-        return pd.read_csv(path)
+        return _project_unified_sources_to_legacy(pd.read_csv(path))
     if path.endswith(".parquet"):
-        return pd.read_parquet(path)
+        return _project_unified_sources_to_legacy(pd.read_parquet(path))
     raise ValueError(path)
 
 
@@ -659,9 +685,15 @@ def _predict_multivar(
     device: str,
     use_future_covariates: bool,
     output_size: Optional[int] = None,
-) -> Dict[str, np.ndarray]:
+) -> Dict[str, Dict[str, np.ndarray]]:
     total_size = int(output_size) if output_size is not None else len(anchors) * horizon
-    out_by_var = {v: np.full(total_size, np.nan, dtype=np.float32) for v in mv_cols}
+    out_by_var = {
+        v: {
+            "mean": np.full(total_size, np.nan, dtype=np.float32),
+            "uncertainty": np.full(total_size, np.nan, dtype=np.float32),
+        }
+        for v in mv_cols
+    }
     if not anchors:
         return out_by_var
 
@@ -711,15 +743,69 @@ def _predict_multivar(
                 num_samples=num_samples,
             )
 
-        mean = _as_numpy(res["mean"]).astype(np.float32)
+        if isinstance(res, dict):
+            mean = _as_numpy(res.get("point_forecast", res.get("mean", res))).astype(np.float32)
+        else:
+            mean = _as_numpy(res).astype(np.float32)
         if mean.ndim == 2:
             mean = mean[:, None, :]
+
+        uncertainty = None
+        if isinstance(res, dict) and res.get("uncertainty") is not None:
+            uncertainty = _as_numpy(res["uncertainty"]).astype(np.float32)
+            if uncertainty.ndim == 2:
+                uncertainty = uncertainty[:, None, :]
+
+        if uncertainty is None:
+            sample_arr = None
+            if isinstance(res, dict):
+                for key in ("samples", "sample", "draws", "pred_samples"):
+                    if res.get(key) is not None:
+                        sample_arr = _as_numpy(res[key]).astype(np.float32)
+                        break
+            if sample_arr is not None and sample_arr.ndim == 2:
+                sample_arr = sample_arr[:, None, :]
+            if sample_arr is not None and sample_arr.ndim == 4:
+                sample_arr = np.squeeze(sample_arr, axis=1) if sample_arr.shape[1] == 1 else sample_arr
+
+            std = None
+            if sample_arr is not None and sample_arr.ndim >= 3:
+                std = np.nanstd(sample_arr, axis=1).astype(np.float32)
+                if std.ndim == 2:
+                    std = std[:, None, :]
+            elif isinstance(res, dict) and res.get("std") is not None:
+                std = _as_numpy(res["std"]).astype(np.float32)
+                if std.ndim == 2:
+                    std = std[:, None, :]
+
+            spread = None
+            if sample_arr is not None and sample_arr.ndim >= 3:
+                q10 = np.nanpercentile(sample_arr, 10, axis=1).astype(np.float32)
+                q90 = np.nanpercentile(sample_arr, 90, axis=1).astype(np.float32)
+                spread = q90 - q10
+                if spread.ndim == 2:
+                    spread = spread[:, None, :]
+            else:
+                low = res.get("quantile_10") if isinstance(res, dict) else None
+                high = res.get("quantile_90") if isinstance(res, dict) else None
+                if low is not None and high is not None:
+                    spread = _as_numpy(high).astype(np.float32) - _as_numpy(low).astype(np.float32)
+                    if spread.ndim == 2:
+                        spread = spread[:, None, :]
+
+            if spread is not None and np.isfinite(spread).any():
+                uncertainty = spread
+            elif std is not None:
+                uncertainty = std
+            else:
+                uncertainty = np.full_like(mean, np.nan, dtype=np.float32)
 
         for batch_offset in range(mean.shape[0]):
             anchor = good[start_idx + batch_offset]
             global_offset = anchor_offset[anchor]
             for channel_idx, var_name in enumerate(mv_cols):
-                out_by_var[var_name][global_offset:global_offset + horizon] = mean[batch_offset, channel_idx, :]
+                out_by_var[var_name]["mean"][global_offset:global_offset + horizon] = mean[batch_offset, channel_idx, :]
+                out_by_var[var_name]["uncertainty"][global_offset:global_offset + horizon] = uncertainty[batch_offset, channel_idx, :]
 
     return out_by_var
 
@@ -878,7 +964,8 @@ def _metrics_zero_shot_shanxi(*, args, pred_table: pd.DataFrame, models: List[st
         time_col = "time"
 
     pred_cols = [f"pred_{m}_{y_col}" for m in models if f"pred_{m}_{y_col}" in pt.columns]
-    dte = dte.merge(pt[["time"] + pred_cols], on="time", how="left")
+    unc_cols = [f"{c}_uncertainty" for c in pred_cols if f"{c}_uncertainty" in pt.columns]
+    dte = dte.merge(pt[["time"] + pred_cols + unc_cols], on="time", how="left")
 
     row: Dict[str, object] = {"tag": getattr(args, "tag", "pipeline"), "split": "test_workday"}
     for model_name in models:

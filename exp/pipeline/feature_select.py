@@ -10,13 +10,35 @@ import pandas as pd
 
 POINTS_PER_DAY = 96
 NOON_OFFSET = 48
+CHINA_EU_STYLE_SYNTHETIC_COLS = [
+    "actual_total_load_proxy",
+    "day_ahead_price_proxy",
+    "hour_of_day",
+    "day_of_week",
+    "is_holiday",
+    "rpr_proxy",
+    "tas_proxy",
+]
+
+
+def project_unified_sources_to_legacy(df: pd.DataFrame) -> pd.DataFrame:
+    dff = df.copy()
+    if "source_1_historical_price" in dff.columns:
+        for c in ["clearing price (CNY/MWh)", "target", "OT", "y_Day-ahead Price [EUR/MWh]", "Day-ahead Price [EUR/MWh]"]:
+            if c in dff.columns:
+                dff[c] = dff["source_1_historical_price"]
+    if "source_2_dynamic_exogenous_load" in dff.columns:
+        for c in ["demand", "Ampirion Load Forecast", "Ampirion zonal load forecast", "total_Actual Total Load [MW] - BZN|DE-LU", "Actual Total Load [MW]"]:
+            if c in dff.columns:
+                dff[c] = dff["source_2_dynamic_exogenous_load"]
+    return dff
 
 
 def read_table(path: str) -> pd.DataFrame:
     if path.endswith(".csv"):
-        return pd.read_csv(path)
+        return project_unified_sources_to_legacy(pd.read_csv(path))
     if path.endswith(".parquet"):
-        return pd.read_parquet(path)
+        return project_unified_sources_to_legacy(pd.read_parquet(path))
     raise ValueError(path)
 
 
@@ -50,6 +72,7 @@ def _attach_tsfm_features(
     pred_table: pd.DataFrame,
     tsfm_models: str,
     tsfm_vars: List[str],
+    use_uncertainty: bool = True,
 ) -> tuple[pd.DataFrame, List[str]]:
     if pred_table is None or len(pred_table) == 0:
         return df, []
@@ -68,18 +91,22 @@ def _attach_tsfm_features(
     if y_col not in want_vars:
         want_vars.append(y_col)
 
-    pred_cols: List[str] = []
+    feature_cols: List[str] = []
     for model_name in models:
         for var_name in want_vars:
-            col = f"pred_{model_name}_{var_name}"
-            if col in pt.columns:
-                pred_cols.append(col)
+            base_col = f"pred_{model_name}_{var_name}"
+            unc_col = f"{base_col}_uncertainty"
+            if base_col in pt.columns:
+                feature_cols.append(base_col)
+            if use_uncertainty and unc_col in pt.columns:
+                feature_cols.append(unc_col)
+    feature_cols = list(dict.fromkeys(feature_cols))
 
-    if not pred_cols:
+    if not feature_cols:
         return dff, []
 
-    dff = dff.merge(pt[[time_col] + pred_cols], on=time_col, how="left")
-    return dff, pred_cols
+    dff = dff.merge(pt[[time_col] + feature_cols], on=time_col, how="left")
+    return dff, feature_cols
 
 
 def make_xy(
@@ -258,6 +285,8 @@ def attach_tsfm_preds_std(
     tsfm_pred_table: pd.DataFrame | None,
     tsfm_models: str,
     tsfm_vars: List[str],
+    use_point: bool = True,
+    use_uncertainty: bool = True,
 ) -> tuple[pd.DataFrame, List[str]]:
     if tsfm_pred_table is None or len(tsfm_pred_table) == 0:
         return base, []
@@ -269,22 +298,131 @@ def attach_tsfm_preds_std(
     pt["time"] = pd.to_datetime(pt["time"]).dt.tz_localize(None)
     pt["h"] = pt["h"].astype(np.int32)
 
-    pred_cols: List[str] = []
+    feature_cols: List[str] = []
     for model_name in models:
         for var_name in tsfm_vars:
-            col = f"pred_{model_name}_{var_name}"
-            if col in pt.columns:
-                pred_cols.append(col)
+            base_col = f"pred_{model_name}_{var_name}"
+            unc_col = f"{base_col}_uncertainty"
+            if use_point and base_col in pt.columns:
+                feature_cols.append(base_col)
+            if use_uncertainty and unc_col in pt.columns:
+                feature_cols.append(unc_col)
+    feature_cols = list(dict.fromkeys(feature_cols))
 
-    if not pred_cols:
+    if not feature_cols:
         return base, []
 
     merged = base.merge(
-        pt[["anchor_time", "time", "h"] + pred_cols],
+        pt[["anchor_time", "time", "h"] + feature_cols],
         on=["anchor_time", "time", "h"],
         how="left",
     )
-    return merged, pred_cols
+    return merged, feature_cols
+
+
+def _conf_col(unc_col: str) -> str:
+    return unc_col.replace("_uncertainty", "_conf")
+
+
+def add_confidence_columns(
+    df: pd.DataFrame,
+    *,
+    pred_cols: List[str],
+    sigma_map: Dict[str, float] | None = None,
+) -> tuple[pd.DataFrame, List[str], Dict[str, float]]:
+    """为每个 uncertainty 列添加 C = exp(-U/(σ_U+ε))。
+
+    sigma_map=None 时用本表（应为训练集）计算 σ_U=std(U) 并返回；否则用给定 σ_U。
+    返回 (df, 新增 conf 列名, {unc_col: sigma_u})。
+    """
+    eps = 1e-6
+    unc_cols = [c for c in pred_cols if c.endswith("_uncertainty")]
+    if not unc_cols:
+        return df.copy(), [], (sigma_map or {})
+
+    dff = df.copy()
+    new_cols: List[str] = []
+    out_map: Dict[str, float] = {}
+    for uc in unc_cols:
+        u = pd.to_numeric(dff[uc], errors="coerce")
+        if sigma_map is None:
+            s = float(u.std(skipna=True))
+            if not np.isfinite(s) or s <= 0:
+                s = 1.0
+        else:
+            s = float(sigma_map.get(uc, 1.0))
+        out_map[uc] = s
+        dff[_conf_col(uc)] = np.exp(-u / (s + eps))
+        new_cols.append(_conf_col(uc))
+    return dff, new_cols, out_map
+
+
+def build_ar_features(
+    df: pd.DataFrame,
+    *,
+    y_col: str,
+    lags=(1, 24, 168),
+    roll=(24,),
+) -> tuple[pd.DataFrame, List[str]]:
+    """因果 AR 旁路特征（只用目标时刻之前的 y）。
+
+    返回 (以 'time' 为主键的 DataFrame, 特征名列表)。
+    lags 单位 = 数据频率步长（小时级：1=1h, 24=1d, 168=1w）。shift(正) 只回看过去，
+    rolling 作用于 shift(1) 后，因此 roll_{stat}_{w}h 只统计 [t-w, t-1] 的过去值，无未来泄漏。
+    """
+    dff = df.sort_values(df.columns[0]).reset_index(drop=True).copy()
+    time_s = pd.to_datetime(dff[df.columns[0]])
+    y = pd.to_numeric(dff[y_col], errors="coerce")
+
+    out = pd.DataFrame({"time": time_s})
+    feats: List[str] = []
+    for lag in lags:
+        c = f"lag_{lag}h"
+        out[c] = y.shift(lag)
+        feats.append(c)
+    for w in roll:
+        r = y.shift(1).rolling(w, min_periods=1)
+        for stat in ("mean", "std", "max", "min"):
+            c = f"roll_{stat}_{w}h"
+            out[c] = getattr(r, stat)()
+            feats.append(c)
+    return out, feats
+
+
+def build_ar_features_for_anchors(
+    base: pd.DataFrame,
+    raw: pd.DataFrame,
+    *,
+    time_col: str,
+    y_col: str,
+    lags=(1, 24, 168),
+    roll=(24,),
+) -> tuple[pd.DataFrame, List[str]]:
+    """Build AR features at each forecast origin, not at each future target.
+
+    Target-time shifting leaks realized intermediate targets when horizon > 1.
+    Every row sharing an anchor therefore receives features from history ending
+    immediately before that anchor.
+    """
+    raw_times = pd.to_datetime(raw[time_col]).dt.tz_localize(None)
+    y = pd.to_numeric(raw[y_col], errors="coerce").to_numpy(dtype=float)
+    lookup = pd.Series(y, index=raw_times).groupby(level=0).last()
+    anchors = pd.DatetimeIndex(pd.to_datetime(base["anchor_time"]).dt.tz_localize(None).drop_duplicates())
+    out = pd.DataFrame({"anchor_time": anchors})
+    feats: List[str] = []
+    for lag in lags:
+        name = f"lag_{lag}h"
+        out[name] = lookup.reindex(anchors - pd.Timedelta(hours=int(lag))).to_numpy()
+        feats.append(name)
+    for window in roll:
+        hist_index = [anchors - pd.Timedelta(hours=i) for i in range(1, int(window) + 1)]
+        hist = np.column_stack([lookup.reindex(idx).to_numpy() for idx in hist_index])
+        for stat in ("mean", "std", "max", "min"):
+            name = f"roll_{stat}_{window}h"
+            with np.errstate(invalid="ignore", divide="ignore"):
+                out[name] = getattr(np, stat)(hist, axis=1)
+            feats.append(name)
+    return out, feats
 
 
 def table_to_xy_std(
@@ -303,9 +441,32 @@ def table_to_xy_std(
             feature_cols,
         )
 
-    X = df[feature_cols].to_numpy(np.float32)
-    y = df["y"].to_numpy(np.float32)
-    times = df["time"].astype(str).tolist()
+    dff = df.copy()
+    before = len(dff)
+    dff = dff.replace([np.inf, -np.inf], np.nan)
+
+    for c in feature_cols:
+        if c not in dff.columns:
+            dff[c] = 0.0
+            print(f"[std xy] missing feature column -> filled with 0: {c}")
+            continue
+        ser = pd.to_numeric(dff[c], errors="coerce")
+        if ser.notna().any():
+            # 因果填充：只向前（用过去值），不向后（避免用未来值补前段）
+            dff[c] = ser.ffill().fillna(0.0)
+        else:
+            dff[c] = 0.0
+            print(f"[std xy] feature column all-missing -> filled with 0: {c}")
+
+    # 目标缺失 -> 删除对应标签，不用未来标签插值补出
+    dff["y"] = pd.to_numeric(dff["y"], errors="coerce")
+    dff = dff.dropna(subset=["y"])
+    dropped = before - len(dff)
+    if dropped:
+        print(f"[std xy] dropped rows with NaN/Inf after repair: {dropped}/{before}")
+    X = dff[feature_cols].to_numpy(np.float32)
+    y = dff["y"].to_numpy(np.float32)
+    times = dff["time"].astype(str).tolist()
     print("[std xy] X shape:", X.shape, "y shape:", y.shape)
     return X, y, times, feature_cols
 
@@ -334,6 +495,7 @@ def build_features(
     cov_cols, y_col = cols_cfg[:-1], cols_cfg[-1]
     if y_col not in tsfm_vars:
         tsfm_vars.append(y_col)
+    tsfm_vars = list(dict.fromkeys(tsfm_vars))
 
     if bool(getattr(args, "is_std", False)):
         ds_tr, ds_va, ds_te, _, _ = _build_epf_benchmark_datasets(
@@ -346,42 +508,93 @@ def build_features(
         va_base = build_std_cov_target_table(ds_va, cov_cols=cov_cols)
         te_base = build_std_cov_target_table(ds_te, cov_cols=cov_cols)
 
+        # AR 旁路特征（因果，从原始整表按过去值构造；按 time 对齐回 std 表）
+        ar_cols: List[str] = []
+        if bool(getattr(args, "use_ar_features", False)):
+            raw = read_table(args.data_path)
+            lags = tuple(int(x) for x in str(getattr(args, "ar_lags", "1,24,168")).split(",") if x.strip())
+            roll = tuple(int(x) for x in str(getattr(args, "ar_roll", "24")).split(",") if x.strip())
+            all_base = pd.concat([tr_base, va_base, te_base], ignore_index=True)
+            ar_df, ar_cols = build_ar_features_for_anchors(
+                all_base, raw, time_col=time_col, y_col=y_col, lags=lags, roll=roll
+            )
+            tr_base = tr_base.merge(ar_df, on="anchor_time", how="left")
+            va_base = va_base.merge(ar_df, on="anchor_time", how="left")
+            te_base = te_base.merge(ar_df, on="anchor_time", how="left")
+
+        use_point = bool(getattr(args, "use_tsfm_point", True))
+        use_uncertainty = bool(getattr(args, "use_tsfm_uncertainty", True))
+        use_confidence = bool(getattr(args, "use_tsfm_confidence", False))
         tr_df, pred_cols = attach_tsfm_preds_std(
             tr_base,
             tsfm_pred_table=pred_table,
             tsfm_models=args.tsfm_models,
             tsfm_vars=tsfm_vars,
+            use_point=use_point,
+            use_uncertainty=(use_uncertainty or use_confidence),
         )
         va_df, _ = attach_tsfm_preds_std(
             va_base,
             tsfm_pred_table=pred_table,
             tsfm_models=args.tsfm_models,
             tsfm_vars=tsfm_vars,
+            use_point=use_point,
+            use_uncertainty=(use_uncertainty or use_confidence),
         )
         te_df, _ = attach_tsfm_preds_std(
             te_base,
             tsfm_pred_table=pred_table,
             tsfm_models=args.tsfm_models,
             tsfm_vars=tsfm_vars,
+            use_point=use_point,
+            use_uncertainty=(use_uncertainty or use_confidence),
         )
 
-        X_tr, y_tr, tr_time, feature_names = table_to_xy_std(tr_df, cov_cols=cov_cols, pred_cols=pred_cols)
-        X_va, y_va, va_time, _ = table_to_xy_std(va_df, cov_cols=cov_cols, pred_cols=pred_cols)
-        X_te, y_te, te_time, _ = table_to_xy_std(te_df, cov_cols=cov_cols, pred_cols=pred_cols)
+        # 置信度 C = exp(-U/σ_U)，σ_U 仅用训练集估计
+        if use_confidence:
+            tr_df, conf_cols, sigma_map = add_confidence_columns(tr_df, pred_cols=pred_cols)
+            va_df, _, _ = add_confidence_columns(va_df, pred_cols=pred_cols, sigma_map=sigma_map)
+            te_df, _, _ = add_confidence_columns(te_df, pred_cols=pred_cols, sigma_map=sigma_map)
+            if not use_uncertainty:
+                pred_cols = [c for c in pred_cols if not c.endswith("_uncertainty")]
+            pred_cols = pred_cols + conf_cols
+
+        all_cov = list(cov_cols) + ["h"] + ar_cols
+        X_tr, y_tr, tr_time, feature_names = table_to_xy_std(tr_df, cov_cols=all_cov, pred_cols=pred_cols)
+        X_va, y_va, va_time, _ = table_to_xy_std(va_df, cov_cols=all_cov, pred_cols=pred_cols)
+        X_te, y_te, te_time, _ = table_to_xy_std(te_df, cov_cols=all_cov, pred_cols=pred_cols)
 
         N_tr = len(ds_tr)
         N_va = len(ds_va)
         N_te = len(ds_te)
 
-        # if bool(getattr(args, "std_merge_valid_to_train", False)):
-        X_tr = np.concatenate([X_tr, X_va], axis=0)
-        y_tr = np.concatenate([y_tr, y_va], axis=0)
-        N_tr += N_va
-        tr_time = tr_time + va_time
-        print(
-            f"[feature_select][standard] merged train+valid for training: "
-            f"N_tr={N_tr}, X_tr.shape={X_tr.shape}, y_tr.shape={y_tr.shape}"
-        )
+        if X_tr.shape[1] != X_va.shape[1]:
+            all_feature_names = list(dict.fromkeys(list(feature_names)))
+            def _pad_to(X, cols):
+                if X.shape[1] == len(all_feature_names):
+                    return X
+                out = np.zeros((X.shape[0], len(all_feature_names)), dtype=np.float32)
+                idx = {c:i for i,c in enumerate(cols)}
+                for j,c in enumerate(all_feature_names):
+                    if c in idx:
+                        out[:, j] = X[:, idx[c]]
+                return out
+            X_tr = _pad_to(X_tr, feature_names)
+            X_va = _pad_to(X_va, feature_names)
+            X_te = _pad_to(X_te, feature_names)
+
+        # 训练/验证不合并：默认 X_tr 仅含训练集，X_va 作为干净的早停集。
+        # 仅当显式开启 std_merge_valid_to_train 时才把 valid 并入 train
+        # （此时 valid 已在训练数据中，早停会失效，调用方应自行关闭早停）。
+        if bool(getattr(args, "std_merge_valid_to_train", False)):
+            X_tr = np.concatenate([X_tr, X_va], axis=0)
+            y_tr = np.concatenate([y_tr, y_va], axis=0)
+            N_tr += N_va
+            tr_time = tr_time + va_time
+            print(
+                f"[feature_select][standard] merged valid into train (std_merge_valid_to_train=1): "
+                f"N_tr={N_tr}, X_tr.shape={X_tr.shape}, y_tr.shape={y_tr.shape}"
+            )
 
         print(f"[feature_select][standard] windows: train={N_tr}, valid={N_va}, test={N_te}")
         print(f"[feature_select][standard] #features: {len(feature_names)}")

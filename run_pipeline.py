@@ -73,6 +73,18 @@ if __name__ == "__main__":
     parser.add_argument("--min_data_in_leaf", type=int, default=20)
     parser.add_argument("--min_sum_hessian_in_leaf", type=float, default=1e-3)
     parser.add_argument("--linear_tree", action="store_true", default=False, help="whether to use linear tree in LightGBM")
+    parser.add_argument("--use_tsfm_point", action=argparse.BooleanOptionalAction, default=True, help="include TSFM median point features (--no-use_tsfm_point for no-TSFM-point ablation)")
+    parser.add_argument("--use_tsfm_uncertainty", action=argparse.BooleanOptionalAction, default=True, help="include TSFM uncertainty U features (--no-use_tsfm_uncertainty for point-only ablation)")
+    parser.add_argument("--use_tsfm_confidence", action="store_true", default=False, help="include confidence C=exp(-U/sigma_U) features (sigma_U from train)")
+    parser.add_argument("--use_ar_features", action="store_true", default=False, help="include causal AR bypass features (lag/rolling of target)")
+    parser.add_argument("--ar_lags", type=str, default="1,24,168", help="comma-separated AR lags (in steps)")
+    parser.add_argument("--ar_roll", type=str, default="24", help="comma-separated AR rolling window sizes (in steps)")
+    parser.add_argument("--std_merge_valid_to_train", action="store_true", default=False, help="merge valid into train (early stopping becomes invalid)")
+    parser.add_argument("--use_asymmetric_loss", action="store_true", default=False, help="train LightGBM with asymmetric loss")
+    parser.add_argument("--asymmetric_alpha", type=float, default=2.0, help="asymmetric loss multiplier for positive residuals")
+    parser.add_argument("--asymmetric_direction", type=str, default="1", choices=["1", "-1", "auto"], help="asymmetric penalty direction: 1=under-prediction, -1=over-prediction, auto=diagnose from training period only")
+    parser.add_argument("--sample_weight_mode", type=str, default="uniform", choices=["uniform", "confidence"], help="sample weight mode for weighted pipeline")
+    parser.add_argument("--sample_weight_lambda", type=float, default=1.0, help="lambda for w=1+lambda*(1-C) in confidence weight mode")
 
     # ===== SHAP explainability =====
     parser.add_argument("--disable_shap", action="store_true", default=False, help="disable SHAP explainability step")

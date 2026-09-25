@@ -33,14 +33,16 @@ class TimesFMAdapter(BaseTimeSeriesModel):
         """加载 TimesFM 模型"""
         try:
             import timesfm
-            
-            # TimesFM 使用默认预训练模型，无需指定路径
-            self.model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(self.model_path, torch_compile=True)
-            # self.model = timesfm.TimesFM.from_pretrained(self.model_path)
-            
+
+            model_path = self.model_path or "/share/home/beiyou2/FutureBoosting/models/TimesFM"
+            self.model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(
+                model_path,
+                torch_compile=False,
+                local_files_only=True,
+            )
 
             self._is_loaded = True
-            print("Loaded TimesFM model (default pretrained model)")
+            print(f"Loaded TimesFM model from {model_path}")
         except ImportError:
             raise ImportError(
                 "TimesFM requires the 'timesfm' package. "
@@ -126,24 +128,30 @@ class TimesFMAdapter(BaseTimeSeriesModel):
 
         import timesfm
         self.model.compile(
-                timesfm.ForecastConfig(
-                    max_context=L,
-                    max_horizon=forecast_horizon,
-                    normalize_inputs=True,
-                    use_continuous_quantile_head=True,
-                    force_flip_invariance=True,
-                    infer_is_positive=True,
-                    fix_quantile_crossing=True,
-                )
+            timesfm.ForecastConfig(
+                max_context=L,
+                max_horizon=forecast_horizon,
+                normalize_inputs=True,
+                use_continuous_quantile_head=True,
+                force_flip_invariance=True,
+                infer_is_positive=True,
+                fix_quantile_crossing=True,
             )
+        )
 
         point_forecast, quantile_forecast = self.model.forecast(
             horizon=forecast_horizon,
-            inputs = [context_np[i] for i in range(batch_size)]
+            inputs=[context_np[i] for i in range(batch_size)],
         )
-        forecast_tensor = torch.from_numpy(quantile_forecast).float().to(self.device).reshape(B, C, forecast_horizon, num_samples)
-        mean_forecast = torch.from_numpy(point_forecast).float().to(self.device).reshape(B, C, forecast_horizon)
-        quantile_forecast_tensor = torch.from_numpy(quantile_forecast).float().to(self.device)
+        point_forecast = np.asarray(point_forecast)
+        quantile_forecast = np.asarray(quantile_forecast)
+        if quantile_forecast.ndim == 3:
+            forecast_arr = quantile_forecast[:, :forecast_horizon, :num_samples]
+        else:
+            forecast_arr = np.repeat(point_forecast[:, :forecast_horizon, None], num_samples, axis=-1)
+        forecast_tensor = torch.from_numpy(forecast_arr).float().to(self.device).reshape(B, C, forecast_horizon, num_samples)
+        mean_forecast = torch.from_numpy(point_forecast[:, :forecast_horizon]).float().to(self.device).reshape(B, C, forecast_horizon)
+        quantile_forecast_tensor = torch.from_numpy(forecast_arr).float().to(self.device)
 
         return {
             'forecast': forecast_tensor,

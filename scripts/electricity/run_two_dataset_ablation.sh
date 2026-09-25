@@ -28,7 +28,7 @@ run_dataset() {
     --tsfm_cols_path "$tsfm" --data_split_path "$split"
     --tag "$tag" --save_dir "$out/PLACEHOLDER"
     --is_std --enable_tsfm 1 --seq_len "$SEQ_LEN" --pred_len "$PRED_LEN"
-    --batch_size "$BATCH_SIZE" --tsfm_num_samples 21
+    --batch_size "$BATCH_SIZE" --tsfm_num_samples "${TSFM_NUM_SAMPLES:-100}"
     --tsfm_cache_path "$cache" --tsfm_models chronos2
     --tsfm_model_paths "{\"chronos2\":\"$CHRONOS2_MODEL_PATH\"}"
     --tsfm_use_future_covariates 0 --regression_model lgbm

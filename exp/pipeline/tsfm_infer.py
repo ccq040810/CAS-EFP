@@ -106,6 +106,7 @@ def load_compare_series_from_cache(
     *,
     args,
     time_points: Sequence[str],
+    sample_keys: pd.DataFrame | None = None,
 ) -> Dict[str, np.ndarray]:
     cache_path = _get_cache_path(args)
     if not os.path.exists(cache_path):
@@ -136,11 +137,15 @@ def load_compare_series_from_cache(
             split_cfg=split_cfg,
             cols_cfg=cols_cfg,
         )
-        base = build_std_key_grid(ds_te)
-        base = _normalize_pred_table_keys(base, is_std=True)
-
         pt = _normalize_pred_table_keys(pt, is_std=True)
         pt = pt.set_index(["anchor_time", "time", "h"]).sort_index()
+        if sample_keys is None:
+            base = build_std_key_grid(ds_te)
+            base = _normalize_pred_table_keys(base, is_std=True)
+        else:
+            # Feature construction drops rows with missing labels. Align the
+            # cached overlapping forecasts to those exact surviving samples.
+            base = _normalize_pred_table_keys(sample_keys, is_std=True)
         base_index = pd.MultiIndex.from_frame(base[["anchor_time", "time", "h"]])
 
         out: Dict[str, np.ndarray] = {}
@@ -191,7 +196,8 @@ def _build_rollout_meta(*, args) -> RolloutMeta:
         seq_len=int(args.seq_len),
         horizon=int(args.pred_len),
         batch_size=int(getattr(args, "batch_size", 256)),
-        num_samples=int(getattr(args, "tsfm_num_samples", 20)),
+        # At least 100 samples are needed for stable tail/MAD estimates.
+        num_samples=int(getattr(args, "tsfm_num_samples", 100)),
         device=str(getattr(args, "device", "cuda")),
         cache_path=_get_cache_path(args),
         models=models,

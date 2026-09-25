@@ -445,13 +445,24 @@ def table_to_xy_std(
     before = len(dff)
     dff = dff.replace([np.inf, -np.inf], np.nan)
 
+    pred_col_set = set(pred_cols)
     for c in feature_cols:
         if c not in dff.columns:
-            dff[c] = 0.0
-            print(f"[std xy] missing feature column -> filled with 0: {c}")
+            if c in pred_col_set:
+                # A missing TSFM output is meaningful (the origin may have
+                # been skipped); preserve it as NaN for LightGBM's missing path.
+                dff[c] = np.nan
+                print(f"[std xy] missing TSFM feature -> preserved as NaN: {c}")
+            else:
+                dff[c] = 0.0
+                print(f"[std xy] missing covariate -> filled with 0: {c}")
             continue
         ser = pd.to_numeric(dff[c], errors="coerce")
-        if ser.notna().any():
+        if c in pred_col_set:
+            # Do not carry a stale forecast/uncertainty forward to another
+            # forecast origin. LightGBM handles missing feature values natively.
+            dff[c] = ser
+        elif ser.notna().any():
             # 因果填充：只向前（用过去值），不向后（避免用未来值补前段）
             dff[c] = ser.ffill().fillna(0.0)
         else:
@@ -610,6 +621,12 @@ def build_features(
             "tr_time": tr_time,
             "va_time": va_time,
             "te_time": te_time,
+            # Retain sample identity after dropping rows with missing labels.
+            # This is used to align overlapping-window TSFM baselines exactly.
+            "te_keys": te_df.loc[
+                pd.to_numeric(te_df["y"], errors="coerce").replace([np.inf, -np.inf], np.nan).notna(),
+                ["anchor_time", "time", "h"],
+            ].reset_index(drop=True),
             "target_mean": float(np.asarray(ds_tr.mean_target, dtype=float).reshape(-1)[0]) if getattr(ds_tr, "mean_target", None) is not None else None,
             "target_std": float(np.asarray(ds_tr.std_target, dtype=float).reshape(-1)[0]) if getattr(ds_tr, "std_target", None) is not None else None,
             "target_scaled": bool(getattr(args, "scale", False)),

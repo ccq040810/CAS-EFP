@@ -37,7 +37,11 @@ class Exp_Pipeline:
             idx = feature_names.index(conf_col)
             C = np.asarray(X_tr[:, idx], dtype=np.float64)
             lam = float(getattr(self.args, "sample_weight_lambda", 1.0))
-            w = 1.0 + lam * (1.0 - np.clip(C, 0.0, 1.0))
+            # A missing TSFM forecast has no confidence evidence; leave that
+            # sample at the neutral weight instead of creating NaN weights.
+            valid = np.isfinite(C)
+            w = np.ones_like(C, dtype=np.float64)
+            w[valid] = 1.0 + lam * (1.0 - np.clip(C[valid], 0.0, 1.0))
             print(f"[sample_weight] confidence mode, lambda={lam}, col={conf_col}, w in [{w.min():.3f}, {w.max():.3f}]")
             return w
         raise ValueError(f"[sample_weight] unknown sample_weight_mode={mode}")
@@ -159,6 +163,7 @@ class Exp_Pipeline:
         compare_series = load_compare_series_from_cache(
             args=self.args,
             time_points=meta["te_time"],
+            sample_keys=meta.get("te_keys"),
         )
 
         if regression_model == "lgbm+linear":

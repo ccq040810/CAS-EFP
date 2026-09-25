@@ -138,7 +138,22 @@ def align(zone: str) -> pd.DataFrame:
     # 目标价放最后（与 regress config 一致），时间列在前
     cols = [c for c in out.columns if c != "y_Day-ahead Price [EUR/MWh]"]
     out = out[["time"] + [c for c in cols if c != "time"] + ["y_Day-ahead Price [EUR/MWh]"]]
-    return out.sort_values("time").reset_index(drop=True)
+    out = out.sort_values("time").reset_index(drop=True)
+    # Keep internal target gaps, but exclude the leading years before the
+    # market's first observed price so chronological splits use the observed
+    # target period. Never interpolate or forward-fill real prices.
+    target_col = "y_Day-ahead Price [EUR/MWh]"
+    first_target_idx = out[target_col].first_valid_index()
+    if first_target_idx is None:
+        raise ValueError(f"{zone}: no observed target prices after alignment")
+    if first_target_idx:
+        first_target_time = out.loc[first_target_idx, "time"]
+        print(
+            f"[{zone}] trim leading rows without target: {first_target_idx} rows "
+            f"before {first_target_time}; internal target gaps are preserved"
+        )
+        out = out.iloc[first_target_idx:].reset_index(drop=True)
+    return out
 
 
 def main() -> None:

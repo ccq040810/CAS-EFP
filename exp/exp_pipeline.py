@@ -114,6 +114,53 @@ class Exp_Pipeline:
         result.to_csv(Path(save_dir) / f"confidence_diagnostics_{split}.csv", index=False)
 
     @staticmethod
+    def _write_prediction_diagnostics(
+        *, X: np.ndarray, y_true: np.ndarray, y_pred: np.ndarray,
+        feature_names: list[str], time_points: list[str],
+        save_dir: str | Path, split: str,
+    ) -> None:
+        """Persist aligned per-timestamp outputs for post-hoc mechanism analysis.
+
+        These rows are descriptive evaluation artifacts only. They are never
+        fed back into fitting, direction selection, or hyperparameter search.
+        """
+        yt = np.asarray(y_true, dtype=float).reshape(-1)
+        yp = np.asarray(y_pred, dtype=float).reshape(-1)
+        times = list(time_points)
+        if not (len(yt) == len(yp) == len(times) == len(X)):
+            raise ValueError(
+                f"prediction diagnostics alignment mismatch: X={len(X)}, y={len(yt)}, "
+                f"pred={len(yp)}, time={len(times)}"
+            )
+
+        names = list(feature_names)
+        point_col = next(
+            (n for n in names if n.startswith("pred_") and not n.endswith(("_conf", "_uncertainty"))),
+            None,
+        )
+        conf_col = next((n for n in names if n.endswith("_conf")), None)
+        tsfm_point = (
+            np.asarray(X[:, names.index(point_col)], dtype=float)
+            if point_col is not None else np.full(len(yt), np.nan)
+        )
+        confidence = (
+            np.asarray(X[:, names.index(conf_col)], dtype=float)
+            if conf_col is not None else np.full(len(yt), np.nan)
+        )
+        frame = pd.DataFrame({
+            "time": times,
+            "y_true": yt,
+            "tree_prediction": yp,
+            "tsfm_point": tsfm_point,
+            "confidence": confidence,
+        })
+        frame["tree_error"] = frame["tree_prediction"] - frame["y_true"]
+        frame["tsfm_error"] = frame["tsfm_point"] - frame["y_true"]
+        frame["tree_abs_error"] = frame["tree_error"].abs()
+        frame["tsfm_abs_error"] = frame["tsfm_error"].abs()
+        frame.to_csv(Path(save_dir) / f"predictions_{split}.csv", index=False)
+
+    @staticmethod
     def _write_train_direction_diagnostics(
         *, X: np.ndarray, y_true: np.ndarray, feature_names: list[str],
         time_points: list[str], save_dir: str | Path,
@@ -210,6 +257,11 @@ class Exp_Pipeline:
                         X=X_te, y_true=y_te, y_pred=y_te_pred,
                         feature_names=meta["feature_names"], save_dir=run_save_dir,
                         split="test",
+                    )
+                    self._write_prediction_diagnostics(
+                        X=X_te, y_true=y_te, y_pred=y_te_pred,
+                        feature_names=meta["feature_names"], time_points=meta["te_time"],
+                        save_dir=run_save_dir, split="test",
                     )
                     test_metrics = evaluate(
                         y_point_pred=y_te_pred,

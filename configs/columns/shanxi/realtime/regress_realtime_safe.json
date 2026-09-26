@@ -1,0 +1,10 @@
+[
+  {
+    "target_columns": [
+      "da_price", "direct_load_forecast", "tie_load_forecast",
+      "wind_forecast", "solar_forecast", "market_import_forecast",
+      "tie_line_forecast", "thermal_forecast", "hour_of_day",
+      "day_of_week", "is_holiday", "y"
+    ]
+  }
+]

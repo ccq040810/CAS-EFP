@@ -181,11 +181,9 @@ def _build_epf_benchmark_datasets(
         scale=scale_flag,
         data_path=str(args.data_path),
         target_columns=list(cols_cfg),
-        data_split={
-            "train": float(split_cfg["train"]),
-            "valid": float(split_cfg["valid"]),
-            "test": float(split_cfg["test"]),
-        },
+        # Preserve optional explicit date boundaries for rolling-origin runs;
+        # CovariateDatasetBenchmark still supports the original ratio split.
+        data_split=dict(split_cfg),
         clean=bool(getattr(args, "clean", False)),
         shift=int(getattr(args, "shift", 0)),
     )

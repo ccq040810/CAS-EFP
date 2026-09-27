@@ -75,6 +75,21 @@ class CovariateDatasetBenchmark(Dataset):
         else:
             self.time_all = None
 
+        explicit_dates = all(k in self.data_split for k in [
+            "train_start", "train_end", "valid_start", "valid_end", "test_start", "test_end"
+        ])
+        if explicit_dates:
+            # Explicit chronological boundaries are used by rolling-origin
+            # experiments. End points are exclusive ISO timestamps.
+            if self.time_all is None:
+                raise ValueError("Explicit date splits require a datetime column")
+            t = pd.DatetimeIndex(self.time_all)
+            bounds = {k: pd.Timestamp(self.data_split[k]) for k in ["train_start", "train_end", "valid_start", "valid_end", "test_start", "test_end"]}
+            starts = [int(t.searchsorted(bounds[k], side="left")) for k in ["train_start", "valid_start", "test_start"]]
+            border2s = [int(t.searchsorted(bounds[k], side="left")) for k in ["train_end", "valid_end", "test_end"]]
+            border1s = [starts[0], max(starts[1] - self.seq_len, 0), max(starts[2] - self.seq_len, 0)]
+            if not (0 <= starts[0] <= border2s[0] <= starts[1] <= border2s[1] <= starts[2] <= border2s[2] <= len(df_raw)):
+                raise ValueError(f"Invalid or overlapping explicit date split: {self.data_split}")
         if self.target_columns is None:
             raise ValueError("target_columns must be provided")
 
@@ -134,7 +149,7 @@ class CovariateDatasetBenchmark(Dataset):
             border2s = [12 * 30 * 24 * 4,
                         12 * 30 * 24 * 4 + 4 * 30 * 24 * 4,
                         12 * 30 * 24 * 4 + 8 * 30 * 24 * 4]
-        else:
+        elif not explicit_dates:
             data_len = len(df_raw)
             num_train = int(data_len * self.data_split['train'])
             num_test = int(data_len * self.data_split['test'])

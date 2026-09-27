@@ -252,6 +252,11 @@ class Exp_Pipeline:
                         feature_names=meta["feature_names"], save_dir=run_save_dir,
                         split="valid",
                     )
+                    self._write_prediction_diagnostics(
+                        X=X_va, y_true=y_va, y_pred=y_va_pred,
+                        feature_names=meta["feature_names"], time_points=meta["va_time"],
+                        save_dir=run_save_dir, split="valid",
+                    )
                     y_te_pred = model.predict(X_te, num_iteration=model.best_iteration)
                     self._write_confidence_diagnostics(
                         X=X_te, y_true=y_te, y_pred=y_te_pred,

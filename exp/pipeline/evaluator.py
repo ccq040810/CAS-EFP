@@ -52,13 +52,35 @@ def evaluate(
 
     y_point_pred = np.asarray(y_point_pred, dtype=float).reshape(-1)
     y_point_true = np.asarray(y_point_true, dtype=float).reshape(-1)
-    metrics = _compute_metrics(
+
+    metrics_norm = _compute_metrics(
         y_true=y_point_true,
         y_pred=y_point_pred,
         N=N,
         L=L,
         is_std=is_std,
     )
+    metrics = dict(metrics_norm)
+
+    if plot_target_mean is not None and plot_target_std is not None:
+        metrics_y_true = y_point_true * float(plot_target_std) + float(plot_target_mean)
+        metrics_y_pred = y_point_pred * float(plot_target_std) + float(plot_target_mean)
+        metrics_raw = _compute_metrics(
+            y_true=metrics_y_true,
+            y_pred=metrics_y_pred,
+            N=N,
+            L=L,
+            is_std=False,
+        )
+        metrics.update({
+            "MSE_norm": metrics_norm.get("MSE"),
+            "MAE_norm": metrics_norm.get("MAE"),
+            "R2_norm": metrics_norm.get("R2"),
+            "MSE_raw": metrics_raw.get("MSE"),
+            "MAE_raw": metrics_raw.get("MAE"),
+            "R2_raw": metrics_raw.get("R2"),
+        })
+        metrics.update(metrics_raw)
 
     payload: Dict[str, Any] = {
         "tag": tag,
@@ -221,10 +243,23 @@ def _compute_metrics(
 def _safe_r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     from sklearn.metrics import r2_score
 
+    y_true = np.asarray(y_true, dtype=float).reshape(-1)
+    y_pred = np.asarray(y_pred, dtype=float).reshape(-1)
+    mask = np.isfinite(y_true) & np.isfinite(y_pred)
+    y_true = y_true[mask]
+    y_pred = y_pred[mask]
+    if y_true.size == 0:
+        return float("nan")
+    var = float(np.var(y_true))
+    if not np.isfinite(var) or var < 1e-12:
+        return 0.0
     try:
-        return float(r2_score(y_true, y_pred))
+        score = float(r2_score(y_true, y_pred))
     except Exception:
         return float("nan")
+    if not np.isfinite(score) or score < -1e6:
+        return 0.0
+    return score
 
 
 def _resolve_title_keys(*, is_std: bool) -> tuple[str, str]:

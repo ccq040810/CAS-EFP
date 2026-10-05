@@ -1,6 +1,7 @@
 """
 Chronos2 模型适配器
 """
+import os
 import warnings
 import torch
 import numpy as np
@@ -51,17 +52,29 @@ class Chronos2Adapter(BaseTimeSeriesModel):
                 raise ValueError("Sundial model requires model_path to be specified")
             
             
-            config = AutoConfig.from_pretrained(self.model_path, trust_remote_code=True)
-            assert hasattr(config, "chronos_config"), "Not a Chronos config file"
-            self.model = Chronos2Model.from_pretrained(
-                self.model_path, 
-                config=config,
-                local_files_only=True,
-                trust_remote_code=True,
-                low_cpu_mem_usage=False,  # 显式关掉以免再要求 accelerate
-                device_map=self.device,
-                dtype=torch.float32
-            )
+            model_path = self.model_path
+            if os.path.isdir(model_path) and not os.path.exists(os.path.join(model_path, "config.json")):
+                raise FileNotFoundError(f"Chronos2 local path missing config.json: {model_path}")
+            if os.path.isdir(model_path):
+                config = AutoConfig.from_pretrained(model_path, trust_remote_code=True, local_files_only=True)
+                assert hasattr(config, "chronos_config"), "Not a Chronos config file"
+                self.model = Chronos2Model.from_pretrained(
+                    model_path,
+                    config=config,
+                    local_files_only=True,
+                    trust_remote_code=True,
+                    low_cpu_mem_usage=False,
+                    device_map=self.device,
+                    dtype=torch.float32
+                )
+            else:
+                self.model = Chronos2Model.from_pretrained(
+                    model_path,
+                    trust_remote_code=True,
+                    low_cpu_mem_usage=False,
+                    device_map=self.device,
+                    dtype=torch.float32
+                )
             
             # self.model.eval()
             self._is_loaded = True
@@ -108,11 +121,14 @@ class Chronos2Adapter(BaseTimeSeriesModel):
         
         Returns:
             dict: 包含以下键的预测结果字典
-                - 'forecast': torch.Tensor，形状为 [batch_size, n_variates, forecast_horizon, num_quantiles]
-                            包含各分位数的预测值
-                - 'mean': torch.Tensor，形状为 [batch_size, n_variates, forecast_horizon]
-                        包含预测的均值（通过对分位数求平均得到）
-                - 'quantiles': List[float]，使用的分位数水平列表
+                - 'forecast': torch.Tensor，形状为 [B, C, forecast_horizon, num_quantiles]
+                            原生分位数值（非独立样本），最后一维对应 quantile_levels
+                - 'quantile_levels': List[float]，原生分位水平列表（升序，如 0.01..0.99）
+                - 'mean': torch.Tensor，形状为 [B, C, forecast_horizon]
+                        中位数点预测 Q(0.5)（而非对分位数值求平均）
+                - 'point_forecast': 同 'mean'
+                - 'uncertainty': torch.Tensor，形状为 [B, C, forecast_horizon]
+                        MAD 积分 U = (1/(τ_hi-τ_lo)) ∫ |Q(τ)-Q(0.5)| dτ
                 - 'metadata': dict，包含模型元数据：
                     - 'model': 模型名称
                     - 'num_samples': 采样次数
@@ -178,19 +194,39 @@ class Chronos2Adapter(BaseTimeSeriesModel):
             )
         outputs_tensor = outputs.quantile_preds[:, :, :forecast_horizon]
 
-        # forecast_tensor = outputs_tensor.reshape(B, C, forecast_horizon, -1) # [batch_size, n_variates, forecast_horizon, num_quantiles]
-        forecast_tensor = outputs_tensor.reshape(B, C, -1, forecast_horizon).permute(0,1,3,2)
-        mean_forecast = forecast_tensor.mean(dim=-1).reshape(B, C, forecast_horizon) # [batch_size, n_variates, forecast_horizon]
+        # 最后一维是「原生分位节点」，不是独立随机样本。
+        # quantile_values: [B, C, H, Q]，Q = len(原生分位水平)，quantile_levels 严格递增。
+        quantile_values = outputs_tensor.reshape(B, C, -1, forecast_horizon).permute(0, 1, 3, 2)
+
+        levels = [float(x) for x in quantile_levels]
+        if len(levels) < 2 or any(b <= a for a, b in zip(levels, levels[1:])):
+            raise ValueError(f"Chronos-2 quantile levels must be strictly increasing: {levels}")
+        if not any(abs(level - 0.5) < 1e-8 for level in levels):
+            raise ValueError(f"Chronos-2 native quantile grid must contain tau=0.5: {levels}")
+        levels_t = torch.tensor(levels, device=quantile_values.device, dtype=quantile_values.dtype)
+
+        # 点预测 = 中位数 Q(0.5)（取 τ=0.5 最近的节点）
+        median_idx = next(i for i, level in enumerate(levels) if abs(level - 0.5) < 1e-8)
+        point_forecast = quantile_values[:, :, :, median_idx].contiguous()  # [B, C, H]
+
+        # 离散度 U^{[.01,.99]} = (1/(τ_hi-τ_lo)) ∫ |Q(τ) - Q(0.5)| dτ（梯形积分，围绕中位数的 MAD）
+        abs_dev = (quantile_values - point_forecast.unsqueeze(-1)).abs()  # [B, C, H, Q]
+        d_tau = levels_t[1:] - levels_t[:-1]                              # [Q-1]
+        integral = ((abs_dev[..., :-1] + abs_dev[..., 1:]) * 0.5 * d_tau).sum(dim=-1)  # [B, C, H]
+        uncertainty = (integral / (levels_t[-1] - levels_t[0])).to(quantile_values.dtype)
 
         return {
-            'forecast': forecast_tensor,
-            'mean': mean_forecast,
-            'quantiles': quantile_levels,
+            'forecast': quantile_values,       # 原生分位数值 [B, C, H, Q]（非样本）
+            'quantile_levels': levels,         # 原生水平列表（升序）
+            'mean': point_forecast,            # 中位数点预测 Q(0.5)
+            'point_forecast': point_forecast,
+            'uncertainty': uncertainty,        # MAD 积分 U
             'metadata': {
                 'model': 'chronos2',
                 'num_samples': num_samples,
                 'forecast_horizon': forecast_horizon,
                 'num_output_patches': num_output_patches,
                 'output_patch_size': self.model.chronos_config.output_patch_size,
+                'quantile_levels': levels,
             }
         }

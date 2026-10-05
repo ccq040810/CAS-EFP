@@ -93,11 +93,11 @@ def _plot_global_topk_bar_and_beeswarm(
     pred_name_set = set(_pretty_name(n) for n in top_raw_names if n.startswith("pred_"))
 
     # ---------- geometry ----------
-    FIGSIZE = (10, 7)
-    LEFT = 0.34
-    RIGHT = 0.90
-    TOP = 0.90
-    BOTTOM = 0.18
+    FIGSIZE = (11.5, 7.8)
+    LEFT = 0.40
+    RIGHT = 0.95
+    TOP = 0.92
+    BOTTOM = 0.16
 
     def _apply_margins(fig):
         fig.subplots_adjust(left=LEFT, right=RIGHT, top=TOP, bottom=BOTTOM)
@@ -158,6 +158,7 @@ def _plot_global_topk_bar_and_beeswarm(
             X_df_top,
             show=False,
             max_display=int(topk),
+            plot_size=None,
         )
 
     _apply_margins(fig)
@@ -167,21 +168,19 @@ def _plot_global_topk_bar_and_beeswarm(
         if tl.get_text() in pred_name_set:
             tl.set_color(c_pred_label)
 
-    # === NEW: bold axis text for main beeswarm axis ===
-    _bold_axes_text(ax)
-
-    # === NEW: bold colorbar axis text (SHAP creates extra axes) ===
+    # smaller, cleaner colorbar text
     for a in fig.axes:
         if a is ax:
             continue
-        # usually this is the colorbar axis
-        for tl in a.get_xticklabels() + a.get_yticklabels():
-            tl.set_fontweight("bold")
+        a.tick_params(axis="both", labelsize=11, width=1.2, length=4)
+        a.xaxis.label.set_fontsize(12)
+        a.yaxis.label.set_fontsize(12)
         a.xaxis.label.set_fontweight("bold")
         a.yaxis.label.set_fontweight("bold")
-        a.tick_params(axis="both", width=1.6, length=6)
         for s in a.spines.values():
-            s.set_linewidth(1.6)
+            s.set_linewidth(1.2)
+
+    _bold_axes_text(ax)
 
     fig.savefig(bees_pdf, dpi=dpi)
     fig.savefig(bees_png, dpi=dpi)
@@ -208,6 +207,7 @@ def run_model_shap_explain(
     max_samples: Optional[int] = None,
     seed: int = 2021,
     topk: int = 50,
+    group_size: Optional[int] = None,
     n_dependence_plots: int = 10,
     n_waterfall_samples: int = 3,
     n_decision_samples: int = 20,
@@ -249,6 +249,10 @@ def run_model_shap_explain(
     n = int(X.shape[0])
     if max_samples is not None and max_samples > 0:
         take = min(int(max_samples), n)
+        if group_size is not None and group_size > 0:
+            take = (take // int(group_size)) * int(group_size)
+            if take <= 0:
+                take = min(n, int(group_size))
         rng = np.random.default_rng(int(seed))
         if take < n:
             idx = rng.choice(n, size=take, replace=False)
@@ -325,6 +329,8 @@ def run_model_shap_explain(
                 "n_rows_total": n,
                 "n_rows_used": int(X_use.shape[0]),
                 "sampled": bool(idx is not None),
+                "sampled_idx": idx.tolist() if idx is not None else None,
+                "group_size": int(group_size) if group_size is not None else None,
                 "max_samples": int(max_samples) if max_samples is not None else None,
                 "seed": int(seed),
             },
@@ -390,18 +396,23 @@ def run_model_shap_explain(
                 dep_paths = []
                 for feat_name, feat_idx in zip(dep_features, dep_feature_indices):
                     try:
-                        plt.figure(figsize=(10, 6))
+                        fig = plt.figure(figsize=(12, 7))
                         shap.dependence_plot(
                             feat_idx,
                             shap_values_arr,
                             X_df,
-                            interaction_index="auto",
+                            interaction_index=None,
+                            dot_size=12,
+                            alpha=0.55,
                             show=False,
                         )
+                        ax = plt.gca()
+                        ax.grid(True, alpha=0.2, linewidth=0.8)
+                        ax.tick_params(axis='both', labelsize=14)
                         plt.tight_layout()
                         dep_path = out_dir / f"shap_dependence_{feat_name}_{split}.pdf"
-                        plt.savefig(dep_path, dpi=220, bbox_inches="tight")
-                        plt.close()
+                        plt.savefig(dep_path, dpi=260, bbox_inches="tight")
+                        plt.close(fig)
                         dep_paths.append(str(dep_path))
                     except Exception as e:
                         _write_text(

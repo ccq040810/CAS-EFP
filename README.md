@@ -62,7 +62,7 @@ FutureBoosting is a two-stage hybrid forecasting framework for electricity price
   - **Standard sliding-window** (enabled via `--is_std`): EPF, REALE, and similar benchmark datasets
 - LightGBM with early stopping and extensive hyperparameter control
 - Linear regression with Ridge, Lasso, or ElasticNet
-- Unified evaluation: RMSE, MAE, MAPE, R², plus interactive Plotly plots
+- Unified evaluation: RMSE / MSE, MAE, MAPE, R², plus interactive Plotly plots
 - SHAP global feature importance (beeswarm, bar, dependence, waterfall, interaction heatmaps)
 - SHAP casebook generation for low / high prediction examples
 - Per-stage efficiency profiling (wall-clock time, CPU RSS, GPU memory)
@@ -263,7 +263,9 @@ Only the models listed in `--tsfm_models` need their paths set.
 
 ## Output Structure
 
-After a run, results are organized under `--save_dir`:
+After a run, results are organized under `--save_dir`.
+
+For the electricity benchmark scripts, the published `MSE` / `MAE` values are computed after inverse normalization into the original price scale.
 
 ```text
 results/
@@ -292,7 +294,7 @@ tsfm_cache/
 | File | Description |
 |------|-------------|
 | `metrics_test.json` | Evaluation metrics for the test split |
-| `metrics_all.csv` | Summary table across all date splits |
+| `metrics_all.csv` | Summary table across all date splits; `MSE` is reported in the original target scale after inverse normalization |
 | `plots/` | Interactive Plotly and static Matplotlib visualizations |
 | `shap/` | SHAP values, importance CSVs, and explanation plots |
 | `tsfm_cache/*.parquet` | Cached TSFM predictions (reused across runs) |

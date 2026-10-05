@@ -28,6 +28,8 @@ DATASETS = {
 }
 CANDIDATES = {
     "tsfm_point": ["--no-use_tsfm_uncertainty"],
+    "tsfm_point_C": ["--use_tsfm_confidence"],
+    "tsfm_point_fixed_asym_noC": ["--no-use_tsfm_uncertainty", "--use_asymmetric_loss", "--asymmetric_alpha", "2.0", "--asymmetric_direction", "auto"],
     "tsfm_point_C_fixed_asym": ["--no-use_tsfm_uncertainty", "--use_tsfm_confidence", "--use_asymmetric_loss", "--asymmetric_alpha", "2.0", "--asymmetric_direction", "auto"],
     "tsfm_point_C_confidence_asym": ["--no-use_tsfm_uncertainty", "--use_tsfm_confidence", "--use_asymmetric_loss", "--asymmetric_alpha", "2.0", "--asymmetric_direction", "auto", "--sample_weight_mode", "confidence", "--sample_weight_lambda", "1.0"],
 }
@@ -102,6 +104,7 @@ def main() -> None:
             # Tail threshold is fitted only on the historical training period.
             train_target = pd.to_numeric(frame.iloc[: int(len(frame) * train_end)][target_col], errors="coerce").dropna()
             threshold = float(train_target.quantile(.95))
+            (wdir / "tail_threshold_train_p95.txt").write_text(f"{threshold:.12g}\n", encoding="utf-8")
             normal = yv < threshold
             scores: dict[str, dict[str, float]] = {}
             for method, path in files.items():

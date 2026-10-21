@@ -1,5 +1,7 @@
 # FutureBoosting
 
+CAS实验扩展：[MLP损失迁移实验与服务器多卡操作说明](docs/MLP_TRANSFER.md)。保留原LightGBM入口，复用原窗口与Chronos缓存，仅替换下游回归器。
+
 > The official code implementation of **Regression Models Meet Foundation Models: A Hybrid-AI Approach to Practical Electricity Price Forecasting**
 
 

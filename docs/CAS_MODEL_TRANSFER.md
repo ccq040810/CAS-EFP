@@ -18,6 +18,21 @@
 
 ## 配置与运行
 
+### 先检查全部环境
+
+在旧efp环境激活后、新仓库根目录执行：
+
+```bash
+python scripts/check_cas_environment.py --old-root /share/home/beiyou1/CAS/CAS-EFP
+cat results/environment_check/summary.txt
+```
+
+检查器不会安装包、下载权重或启动全量实验。它核对原数据文件身份、六个v3时间划分、依赖导入、八张可见GPU、CUDA计算及MLP/LightGBM最小真实训练。各上游分别使用独立子进程检查本地/HuggingFace缓存权重，检查分片完整性，并实际执行168→24预测、P50和离散度输出检查；没有真实推理通过就不会标记READY。退出码2表示仍有缺项，详细报告和错误日志在results/environment_check/。
+
+不同环境可用--moirai2-python /absolute/env/bin/python、--sundial-python /absolute/env/bin/python分别检查；权重路径可用--moirai2-path和--sundial-path指定。缺少本地权重时不会自动联网下载。--skip-inference仅作依赖盘点，不会认证上游已就绪。
+
+Sundial官方Quickstart指定transformers==4.40.1，而Chronos-2使用更高版本接口，不能直接降级原efp环境。若同环境实际推理失败，应为Sundial建立独立环境后重新检查。Moirai-2必须检查uni2ts.model.moirai2确实能导入，不能只检查uni2ts包名。
+
 在服务器上使用已有实验环境，准备原始数据、权重和原三窗口data_split.json。不要重新按比例分割。先复制并编辑配置：
 
 ```bash

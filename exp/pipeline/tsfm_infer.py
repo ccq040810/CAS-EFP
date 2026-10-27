@@ -663,7 +663,7 @@ def _build_std_rollout_grid(
 def _load_model(model_name: str, model_path: str, device: str):
     from ts_models import TimeSeriesModelFactory
 
-    model = TimeSeriesModelFactory.create_model(model_name, model_path=model_path, model_type=model_name)
+    model = TimeSeriesModelFactory.create_model(model_name, model_path=model_path, device=device, model_type=model_name)
     if hasattr(model, "to"):
         model.to(device)
     return model

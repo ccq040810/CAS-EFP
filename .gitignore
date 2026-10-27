@@ -15,3 +15,4 @@ results/
 _*-extracted.txt
 tmp_electricity_*.json
 =*
+configs/cas_transfer.local.json

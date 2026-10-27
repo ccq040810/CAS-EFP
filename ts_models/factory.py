@@ -76,6 +76,9 @@ class TimeSeriesModelFactory:
             ... )
         """
         model_name_lower = model_name.lower()
+        if model_name_lower in ("cas_chronos2", "cas_moirai2", "cas_sundial"):
+            from .cas_distribution import CASDistributionAdapter
+            return CASDistributionAdapter(model_name_lower[4:], model_path=model_path, device=device)
         
         if model_name_lower not in MODEL_ADAPTERS:
             available_models = ', '.join(MODEL_ADAPTERS.keys())

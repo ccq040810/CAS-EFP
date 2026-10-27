@@ -2,6 +2,8 @@
 
 CAS实验扩展：[MLP损失迁移实验与服务器多卡操作说明](docs/MLP_TRANSFER.md)。保留原LightGBM入口，复用原窗口与Chronos缓存，仅替换下游回归器。
 
+新增：[上游模型与下游回归器交叉替换实验](docs/CAS_MODEL_TRANSFER.md)，支持Chronos-2、Moirai-2、Sundial × LightGBM、MLP，统一概率输出和时间划分，并提供置信度机制对照。
+
 > The official code implementation of **Regression Models Meet Foundation Models: A Hybrid-AI Approach to Practical Electricity Price Forecasting**
 
 

@@ -1,0 +1,19 @@
+{
+  "split_root": "/absolute/path/to/results/rolling_adaptive_v3",
+  "cache_root": "results/cas_transfer_cache_v1",
+  "prepared_root": "results/cas_transfer_prepared_v1",
+  "output_root": "results/cas_transfer_v1",
+  "markets": ["guangdong", "reale_delu"],
+  "windows": [1, 2, 3],
+  "seeds": [42, 43, 44],
+  "gpus": ["0"],
+  "prepare_device": "cuda:0",
+  "selection": "rmse",
+  "suite": "mechanism",
+  "regressors": ["lightgbm", "mlp"],
+  "upstreams": {
+    "cas_chronos2": "models/chronos-2",
+    "cas_moirai2": "Salesforce/moirai-2.0-R-small",
+    "cas_sundial": "thuml/sundial-base-128m"
+  }
+}

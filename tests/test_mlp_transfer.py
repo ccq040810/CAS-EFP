@@ -14,10 +14,29 @@ import torch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from exp.pipeline.mlp_regressor import MLPRegressor, directional_loss
-from scripts.run_mlp_transfer import sha
+from scripts.run_mlp_transfer import sha, training_weights, suite_methods
 
 
 class LossTests(unittest.TestCase):
+    def test_mechanism_controls_preserve_strength_and_shuffle_only_assignment(self):
+        c = np.array([.1, .3, .7, 1.])
+        original = training_weights(c, "tsfm_point_C_confidence_asym", 1, 42)
+        mean = training_weights(c, "tsfm_point_C_mean_weight_asym", 1, 42)
+        shuffled = training_weights(c, "tsfm_point_C_shuffled_weight_asym", 1, 42)
+        np.testing.assert_allclose(mean, original.mean())
+        np.testing.assert_array_equal(np.sort(shuffled), np.sort(original))
+        np.testing.assert_array_equal(shuffled, training_weights(c, "tsfm_point_C_shuffled_weight_asym", 1, 42))
+        self.assertFalse(np.array_equal(shuffled, original))
+        np.testing.assert_array_equal(c, [.1, .3, .7, 1.])
+        for method in suite_methods("mechanism"):
+            weight = training_weights(c, method, 0, 42)
+            if weight is not None:
+                np.testing.assert_array_equal(weight, np.ones(4))
+        self.assertEqual(len(suite_methods("original")), 5)
+        self.assertEqual(len(suite_methods("mechanism")), 7)
+        with self.assertRaises(ValueError):
+            training_weights([float("nan")], "tsfm_point_C_confidence_asym", 1, 42)
+
     def test_autograd_matches_existing_lightgbm_objective(self):
         from exp.pipeline.regressor import asymmetric_l2_objective_weighted
         class Dataset:
@@ -139,6 +158,9 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(completion["completed"],5)
             self.assertFalse(completion["missing"])
             self.assertTrue((root/"output/paired_cas_vs_fixed.csv").is_file())
+            import pandas as pd
+            pairs = pd.read_csv(root/"output/paired_by_window.csv")
+            self.assertEqual(len(pairs), 4)
             result = subprocess.run(cmd+["--resume"],capture_output=True,text=True)
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
             self.assertEqual(result.stdout.count("SKIP completed"),5)

@@ -45,7 +45,7 @@ class SundialAdapter(BaseTimeSeriesModel):
                 config=config,
                 trust_remote_code=True,
                 device_map=self.device,
-                dtype=torch.float32
+                torch_dtype=torch.float32
             )
             self.model.eval()
             self._is_loaded = True

@@ -5,6 +5,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import torch
@@ -16,6 +17,19 @@ from scripts.run_cas_transfer_matrix import commands, verify_alignment
 
 
 class DistributionTests(unittest.TestCase):
+    def test_sundial_uses_legacy_supported_dtype_argument(self):
+        from ts_models.adapters.sundial_adapter import SundialAdapter
+        captured = {}
+        def load(path, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(eval=lambda: None)
+        fake = SimpleNamespace(AutoConfig=SimpleNamespace(from_pretrained=lambda *a,**k: object()),
+                               AutoModelForCausalLM=SimpleNamespace(from_pretrained=load))
+        with patch.dict(sys.modules, {"transformers":fake}):
+            SundialAdapter(model_path="fixture", device="cpu").load_model()
+        self.assertIs(captured["torch_dtype"], torch.float32)
+        self.assertNotIn("dtype", captured)
+
     def test_median_and_integral_on_common_grid(self):
         result = summarize_distribution(GRID.reshape(1,1,1,9), levels=GRID)
         self.assertAlmostEqual(result["point_forecast"].item(), .5)

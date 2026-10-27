@@ -1,5 +1,26 @@
 # CAS上下游模型替换实验
 
+## 已准备好离线环境的服务器一键运行
+
+```bash
+cd ~/CAS/CAS-EFP-transfer
+bash scripts/start_cas_all.sh
+```
+
+此入口适配当前服务器资源布局：原项目为同级CAS-EFP，模型包位于同级cas-offline-bundle-20261027，独立环境位于同级cas-envs/moirai-py312及sundial-py312，基础Python为/share/bupt/czl/miniconda3/envs/efp/bin/python。脚本不会安装包或下载权重；如资源尚未准备好，真实环境检查会停止任务并记录缺项。其他服务器可用CAS_BASE_PYTHON和run_cas_all.py的路径参数配置。
+
+后台启动后无需保持SSH连接。它依次检查全部真实模型环境、复用已校验的窗口特征、八卡并行准备剩余窗口、核对跨家族样本一致性，再以八卡MLP任务队列和四路CPU LightGBM队列运行全部756次训练。上游分别使用独立解释器，所有下游统一在原efp环境训练；不使用DDP，不把LightGBM转到GPU。
+
+同一命令可断点继续，操作系统文件锁阻止同一输出目录出现重复启动器。未完成的特征在独立staging目录准备，已有不完整目录保留；完整特征通过哈希及源文件检查后跳过。训练仅跳过配置匹配且具有完成标志的任务。停止时仅终止启动器拥有的子进程。
+
+进度日志为results/cas_all_launcher.log；每项详细日志在results/cas_all_20261027/logs/。最后输出FINAL_RESULTS.csv、FINAL_PAIRED_BY_WINDOW.csv、RESULTS.md和completion.json；只有756项全部完成时才生成最终总表。任意缺项会报告失败，不把局部结果当作完整结果。结果单位沿用输入数据，未自动转换为kWh。
+
+只检查而不启动实验可前台运行：
+
+```bash
+python scripts/run_cas_all.py --phase check
+```
+
 固定原广东和德国—卢森堡数据、训练/验证/测试窗口、168小时历史、24小时预测及特征构造，分别替换上游概率模型和下游回归器。该实验回答CAS的增量收益能否跨模型保持，不预设任何替代模型必然受益。
 
 ## 实验矩阵

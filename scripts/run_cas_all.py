@@ -21,7 +21,7 @@ from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from scripts.run_mlp_transfer import METHODS, ROLLOUT_PROTOCOL, job_config, read, sha, summarize, write
+from scripts.run_mlp_transfer import MECHANISM as METHODS, ROLLOUT_PROTOCOL, job_config, read, sha, summarize, write
 from scripts.run_cas_transfer_matrix import verify_alignment
 
 
@@ -65,12 +65,17 @@ def main():
     parser.add_argument("--env-root",type=Path,default=ROOT.parent/"cas-envs")
     parser.add_argument("--prepared-root",type=Path,default=ROOT/"results/cas_transfer_prepared_v2")
     parser.add_argument("--cache-root",type=Path,default=ROOT/"results/cas_transfer_cache_v2")
-    parser.add_argument("--output-root",type=Path,default=ROOT/"results/cas_all_20261028_v2")
+    parser.add_argument("--output-root",type=Path)
+    parser.add_argument("--selection",choices=["rmse","legacy"],default="rmse",
+                        help="legacy restores the original asymmetric validation early stopping; not the old history bug")
     parser.add_argument("--gpus",nargs="+",default=list(map(str,range(8))))
     parser.add_argument("--cpu-workers",type=int,default=4)
     parser.add_argument("--threads",type=int,default=4)
     parser.add_argument("--phase",choices=["all","check","prepare","train","summarize"],default="all")
     args = parser.parse_args()
+    if args.output_root is None:
+        suffix = "_legacy_selection" if args.selection == "legacy" else ""
+        args.output_root = ROOT/f"results/cas_all_20261028_v2{suffix}"
     if len(set(args.gpus)) != len(args.gpus) or args.cpu_workers < 1 or args.threads < 1:
         parser.error("Unique GPU IDs and positive CPU settings are required")
     for key in ("old_root","bundle_root","env_root","prepared_root","cache_root","output_root"):
@@ -83,7 +88,7 @@ def main():
     }
     markets, windows, seeds = ["guangdong","reale_delu"], [1,2,3], [42,43,44]
     config = dict(sources={k:list(map(str,v)) for k,v in sources.items()},markets=markets,windows=windows,
-                  seeds=seeds,methods=list(METHODS),selection="rmse",alpha=2.,weight_lambda=1.,
+                  seeds=seeds,methods=list(METHODS),selection=args.selection,alpha=2.,weight_lambda=1.,
                   hidden=[128,64],lr=.001,batch_size=8192,epochs=300,patience=30,
                   lgbm_rounds=2000,lgbm_patience=100,threads=args.threads,
                   prepared_root=str(args.prepared_root),cache_root=str(args.cache_root),
@@ -210,9 +215,9 @@ def main():
             for backend in ("mlp","lightgbm"):
                 out = args.output_root/source/backend; out.mkdir(parents=True,exist_ok=True)
                 write(out/"expected_jobs.json",dict(markets=markets,windows=windows,seeds=seeds,
-                                                  methods=list(METHODS),selection="rmse"))
+                                                  methods=list(METHODS),selection=args.selection))
         if args.phase in ("all","train"):
-            defaults = dict(hidden=[128,64],lr=.001,batch_size=8192,epochs=300,patience=30,selection="rmse",
+            defaults = dict(hidden=[128,64],lr=.001,batch_size=8192,epochs=300,patience=30,selection=args.selection,
                             alpha=2.,weight_lambda=1.,lgbm_rounds=2000,lgbm_patience=100)
             def train(job):
                 source,backend,market,window,method,seed = job
@@ -230,7 +235,7 @@ def main():
                     cmd = [sys.executable,ROOT/"scripts/run_mlp_transfer.py","worker",
                            "--prepared-root",args.prepared_root/source,"--output-root",args.output_root/source/backend,
                            "--regressor",backend,"--market",market,"--window",str(window),"--method",method,
-                           "--seed",str(seed),"--selection","rmse","--threads",str(args.threads),
+                           "--seed",str(seed),"--selection",args.selection,"--threads",str(args.threads),
                            "--device","cuda:0" if backend == "mlp" else "cpu"]
                     status("TRAIN",gpu,job)
                     execute(cmd,logs/f"{source}_{backend}_{market}_w{window}_{method}_s{seed}.log",gpu)

@@ -29,10 +29,12 @@ METHODS.update({
     "tsfm_point_C_mean_weight_asym": (True, True, True),
     "tsfm_point_C_shuffled_weight_asym": (True, True, True),
 })
+MECHANISM = list(METHODS)  # Preserve the completed seven-method experiment.
+METHODS["tsfm_point_confidence_asym_noC"] = (False, True, True)
 
 
 def suite_methods(suite):
-    return CORE if suite == "core" else ORIGINAL if suite == "original" else list(METHODS)
+    return CORE if suite == "core" else ORIGINAL if suite == "original" else MECHANISM
 
 
 def training_weights(confidence, method, weight_lambda, seed):

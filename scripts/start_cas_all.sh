@@ -14,5 +14,5 @@ nohup "$python_bin" -u scripts/run_cas_all.py "$@" \
 launcher_pid=$!
 echo "Launcher PID: $launcher_pid"
 echo "Progress: tail -f $repo_root/results/cas_all_launcher.log"
-echo "Final: $repo_root/results/cas_all_20261027/RESULTS.md"
-echo "Completion: $repo_root/results/cas_all_20261027/completion.json"
+echo "Final: $repo_root/results/cas_all_20261028_v2/RESULTS.md"
+echo "Completion: $repo_root/results/cas_all_20261028_v2/completion.json"

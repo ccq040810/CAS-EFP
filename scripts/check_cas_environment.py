@@ -120,6 +120,24 @@ def probe(args):
                     model.fit(X[:96],y[:96],X[96:],y[96:],weights)
                     assert np.isfinite(model.predict(X[96:])).all()
                     result[name + "_real_training"] = "OK"
+                # A synthetic model load alone cannot detect timestamp resolution
+                # mismatches. Exercise the actual history selector in ns and us.
+                import pandas as pd
+                from exp.pipeline.tsfm_infer import _predict_multivar
+                class HistoryProbe:
+                    def predict(self,context,forecast_horizon,**kwargs):
+                        np.testing.assert_array_equal(context.cpu().numpy(),[[[4.,5.,5.,7.]]])
+                        values = context[..., -1:].expand(-1,-1,forecast_horizon)
+                        return dict(mean=values,uncertainty=torch.ones_like(values))
+                for unit in ("ns","us"):
+                    index = pd.date_range("2024-01-01",periods=12,freq="h",tz="Asia/Shanghai").as_unit(unit)
+                    frame = pd.DataFrame({"y":np.arange(12,dtype=float)},index=index)
+                    frame.iloc[6,0] = np.nan
+                    _predict_multivar(df=frame,mv_cols=["y"],anchors=[index[8]],anchor_offset={index[8]:0},
+                                      model=HistoryProbe(),seq_len=4,horizon=2,batch_size=1,num_samples=1,
+                                      device="cpu",use_future_covariates=False,causal_context_fill=True)
+                    assert np.isnan(frame.iloc[6,0])
+                result["rollout_origin_causality_ns_us"] = "OK"
         else:
             from huggingface_hub import snapshot_download
             requested = args.model_path or FAMILIES[args.probe][0]

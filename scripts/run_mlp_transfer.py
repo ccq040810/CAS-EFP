@@ -24,6 +24,7 @@ METHODS = {
 }
 CORE = ["tsfm_point_C", "tsfm_point_C_fixed_asym", "tsfm_point_C_confidence_asym"]
 ORIGINAL = list(METHODS)
+ROLLOUT_PROTOCOL = "timestamp_searchsorted_causal_history_ffill_v2"
 METHODS.update({
     "tsfm_point_C_mean_weight_asym": (True, True, True),
     "tsfm_point_C_shuffled_weight_asym": (True, True, True),
@@ -125,6 +126,7 @@ def prepare(args):
                 cache_dir.mkdir(parents=True, exist_ok=True)
                 identity = dict(upstream=upstream, model_path=args.model_path,
                                 protocol="cas_common_q10_q90_v1", seed=42,
+                                rollout_protocol=ROLLOUT_PROTOCOL,
                                 num_samples=100, batch_size=args.tsfm_batch_size,
                                 sources={str(p):sha(p) for p in [ROOT/data, ROOT/regress, ROOT/tsfm, split]})
                 guard = cache_dir/"cas_cache_identity.json"
@@ -177,6 +179,7 @@ def prepare(args):
             except (OSError, subprocess.CalledProcessError):
                 revision = "unknown"
             manifest = dict(market=market, window=window, feature_names=names, upstream=upstream,
+                            rollout_protocol=ROLLOUT_PROTOCOL if upstream.startswith("cas_") else "timestamp_searchsorted_native",
                             distribution_protocol="cas_common_q10_q90_v1" if upstream.startswith("cas_") else "original_chronos2_native",
                             confidence_index=confs[0], point_index=points[0], direction=direction,
                             counts=dict(train=len(ytr), valid=len(yva), test=len(yte)),

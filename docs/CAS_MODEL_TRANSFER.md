@@ -1,5 +1,13 @@
 # CAS上下游模型替换实验
 
+## 2026年10月28日历史窗口修复
+
+v1批量准备暴露了Pandas 3的datetime64[us]与Timestamp.value纳秒整数比较不一致，可能把历史切片错误定位到数据末尾。现在统一使用DatetimeIndex.searchsorted按时间戳比较，并在ns/us两种分辨率下测试历史起点和未来值扰动不变性。环境检查也加入实际历史选择逻辑测试。
+
+CAS上游历史输入中缺失价格统一采用仅向前填充：只使用预测起点之前已观测价格，不修改原始CSV、时间划分、真实标签或评价样本；真实标签缺失仍按原规则删除。无法用过去值补齐的前缀会明确失败，绝不向后填充。该协议记为timestamp_searchsorted_causal_history_ffill_v2。
+
+旧v1特征和缓存不可用于修复后实验，保留供核查。默认入口现在使用results/cas_transfer_prepared_v2、results/cas_transfer_cache_v2和results/cas_all_20261028_v2。旧论文实验是否受同类时间定位影响需要独立核查，不能由本轮环境检查结果直接推断。
+
 ## 已准备好离线环境的服务器一键运行
 
 ```bash
@@ -13,7 +21,7 @@ bash scripts/start_cas_all.sh
 
 同一命令可断点继续，操作系统文件锁阻止同一输出目录出现重复启动器。未完成的特征在独立staging目录准备，已有不完整目录保留；完整特征通过哈希及源文件检查后跳过。训练仅跳过配置匹配且具有完成标志的任务。停止时仅终止启动器拥有的子进程。
 
-进度日志为results/cas_all_launcher.log；每项详细日志在results/cas_all_20261027/logs/。最后输出FINAL_RESULTS.csv、FINAL_PAIRED_BY_WINDOW.csv、RESULTS.md和completion.json；只有756项全部完成时才生成最终总表。任意缺项会报告失败，不把局部结果当作完整结果。结果单位沿用输入数据，未自动转换为kWh。
+进度日志为results/cas_all_launcher.log（追加写入，前面的旧失败记录会保留）；每项详细日志在results/cas_all_20261028_v2/logs/。最后输出FINAL_RESULTS.csv、FINAL_PAIRED_BY_WINDOW.csv、RESULTS.md和completion.json；只有756项全部完成时才生成最终总表。任意缺项会报告失败，不把局部结果当作完整结果。结果单位沿用输入数据，未自动转换为kWh。
 
 只检查而不启动实验可前台运行：
 

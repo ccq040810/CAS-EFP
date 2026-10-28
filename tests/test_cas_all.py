@@ -8,7 +8,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from scripts.run_cas_all import expected_jobs, prepared_manifest, run_lock
-from scripts.run_mlp_transfer import sha
+from scripts.run_mlp_transfer import sha, ROLLOUT_PROTOCOL
 
 
 class AllLauncherTests(unittest.TestCase):
@@ -29,11 +29,18 @@ class AllLauncherTests(unittest.TestCase):
             root = Path(temp)
             (root/"features.npz").write_bytes(b"fixture")
             manifest = dict(upstream="cas_sundial",distribution_protocol="cas_common_q10_q90_v1",
+                            rollout_protocol=ROLLOUT_PROTOCOL,
                             arrays_sha256=sha(root/"features.npz"))
             (root/"manifest.json").write_text(json.dumps(manifest))
             self.assertEqual(prepared_manifest(root,"cas_sundial"),manifest)
             with self.assertRaises(ValueError):
                 prepared_manifest(root,"cas_moirai2")
+            old = dict(manifest)
+            old.pop("rollout_protocol")
+            (root/"manifest.json").write_text(json.dumps(old))
+            with self.assertRaisesRegex(ValueError,"Pre-fix"):
+                prepared_manifest(root,"cas_sundial")
+            (root/"manifest.json").write_text(json.dumps(manifest))
             (root/"features.npz").write_bytes(b"changed")
             with self.assertRaises(ValueError):
                 prepared_manifest(root,"cas_sundial")

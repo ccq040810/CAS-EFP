@@ -360,6 +360,7 @@ def _infer_missing_predictions(
             device=meta.device,
             use_future_covariates=meta.use_future_covariates,
             output_size=len(base),
+            causal_context_fill=model_name.startswith("cas_"),
         )
         for var_name in meta.mv_cols:
             pred_pack = pred_pack_by_var[var_name]
@@ -594,13 +595,12 @@ def _filter_valid_anchors(
     seq_len: int,
     horizon: int,
 ) -> List[pd.Timestamp]:
-    t_ns = index.view("int64")
     out = []
     for anchor in anchors:
-        pos = np.searchsorted(t_ns, int(anchor.value))
+        pos = int(index.searchsorted(anchor, side="left"))
         # 注意：这里必须用 `pos + horizon > len(t_ns)`，不能用 `>=`；
         # 因为 future 切片 [pos : pos+horizon] 是左闭右开，等于 len(t_ns) 时仍然合法。
-        if pos < seq_len or pos + horizon > len(t_ns) or t_ns[pos] != int(anchor.value): continue
+        if pos < seq_len or pos + horizon > len(index) or index[pos] != anchor: continue
         out.append(anchor)
     return out
 
@@ -691,6 +691,7 @@ def _predict_multivar(
     device: str,
     use_future_covariates: bool,
     output_size: Optional[int] = None,
+    causal_context_fill: bool = False,
 ) -> Dict[str, Dict[str, np.ndarray]]:
     total_size = int(output_size) if output_size is not None else len(anchors) * horizon
     out_by_var = {
@@ -704,16 +705,25 @@ def _predict_multivar(
         return out_by_var
 
     num_channels = len(mv_cols)
-    t_ns = df.index.view("int64")
+    # Pandas 3 may use datetime64[us], whereas Timestamp.value is always ns.
+    # Compare timestamps directly; never compare their raw integer encodings.
+    history = df.loc[:, list(mv_cols)]
+    if causal_context_fill:
+        # Impute historical INPUTS only, using observations strictly before the
+        # forecast origin. Original targets/dataframe and future labels stay intact.
+        history = history.replace([np.inf, -np.inf], np.nan).ffill()
+    history_values = history.to_numpy(np.float32)
 
     ctx_list = []
     fut_list = []
     good = []
 
     for anchor in anchors:
-        pos = np.searchsorted(t_ns, int(anchor.value))
-        past = df.iloc[pos - seq_len:pos][list(mv_cols)].to_numpy(np.float32)
+        pos = int(df.index.searchsorted(anchor, side="left"))
+        past = history_values[max(0, pos - seq_len):pos]
         if past.shape != (seq_len, num_channels) or not np.isfinite(past).all():
+            if causal_context_fill:
+                raise ValueError(f"Incomplete causal history at {anchor}: expected {seq_len} finite past steps after forward fill")
             continue
 
         future = None

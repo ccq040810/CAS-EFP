@@ -21,7 +21,7 @@ from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from scripts.run_mlp_transfer import METHODS, job_config, read, sha, summarize, write
+from scripts.run_mlp_transfer import METHODS, ROLLOUT_PROTOCOL, job_config, read, sha, summarize, write
 from scripts.run_cas_transfer_matrix import verify_alignment
 
 
@@ -51,6 +51,8 @@ def prepared_manifest(folder, source):
     manifest = read(Path(folder)/"manifest.json")
     if manifest.get("upstream") != source or manifest.get("distribution_protocol") != "cas_common_q10_q90_v1":
         raise ValueError(f"Wrong probability source/protocol in {folder}")
+    if manifest.get("rollout_protocol") != ROLLOUT_PROTOCOL:
+        raise ValueError(f"Pre-fix history/cache protocol in {folder}; prepare into a new v2 root")
     if sha(Path(folder)/"features.npz") != manifest["arrays_sha256"]:
         raise ValueError(f"Feature fingerprint mismatch in {folder}")
     return manifest
@@ -61,9 +63,9 @@ def main():
     parser.add_argument("--old-root",type=Path,default=ROOT.parent/"CAS-EFP")
     parser.add_argument("--bundle-root",type=Path,default=ROOT.parent/"cas-offline-bundle-20261027")
     parser.add_argument("--env-root",type=Path,default=ROOT.parent/"cas-envs")
-    parser.add_argument("--prepared-root",type=Path,default=ROOT/"results/cas_transfer_prepared_v1")
-    parser.add_argument("--cache-root",type=Path,default=ROOT/"results/cas_transfer_cache_v1")
-    parser.add_argument("--output-root",type=Path,default=ROOT/"results/cas_all_20261027")
+    parser.add_argument("--prepared-root",type=Path,default=ROOT/"results/cas_transfer_prepared_v2")
+    parser.add_argument("--cache-root",type=Path,default=ROOT/"results/cas_transfer_cache_v2")
+    parser.add_argument("--output-root",type=Path,default=ROOT/"results/cas_all_20261028_v2")
     parser.add_argument("--gpus",nargs="+",default=list(map(str,range(8))))
     parser.add_argument("--cpu-workers",type=int,default=4)
     parser.add_argument("--threads",type=int,default=4)
@@ -85,13 +87,17 @@ def main():
                   hidden=[128,64],lr=.001,batch_size=8192,epochs=300,patience=30,
                   lgbm_rounds=2000,lgbm_patience=100,threads=args.threads,
                   prepared_root=str(args.prepared_root),cache_root=str(args.cache_root),
-                  old_root=str(args.old_root))
+                  old_root=str(args.old_root),rollout_protocol=ROLLOUT_PROTOCOL)
     logs = args.output_root/"logs"; logs.mkdir(exist_ok=True)
     cards = queue.Queue()
     for card in args.gpus:
         cards.put(card)
-    active, mutex = set(), threading.Lock()
+    active, mutex = set(), threading.RLock()
     stopping = threading.Event()
+
+    def status(*values):
+        with mutex:
+            print(" ".join(map(str,values)),flush=True)
 
     def interrupt(signum, frame):
         stopping.set()
@@ -135,7 +141,7 @@ def main():
                         future.result()
                     except Exception as exc:
                         failures.append(dict(job=list(futures[future]),error=str(exc)))
-                        print("FAILED",futures[future],str(exc),flush=True)
+                        status("FAILED",futures[future],str(exc))
             except KeyboardInterrupt:
                 for future in futures:
                     future.cancel()
@@ -156,7 +162,7 @@ def main():
             for source,(python,model) in sources.items():
                 family = source[4:]
                 cmd += [f"--{family}-python",python,f"--{family}-path",model]
-            print("CHECK all real model environments",flush=True)
+            status("CHECK all real model environments")
             execute(cmd,logs/"environment.log",gpu=",".join(args.gpus))
             if args.phase == "check":
                 return
@@ -170,7 +176,7 @@ def main():
                     for path,digest in meta["source_sha256"].items():
                         if sha(path) != digest:
                             raise ValueError(f"Prepared input changed: {path}")
-                    print("SKIP prepared",source,market,window,flush=True)
+                    status("SKIP prepared",source,market,window)
                     return
                 # Never delete an interrupted user's folder. Prepare in a new staging tree.
                 staging = args.prepared_root/".staging"/uuid.uuid4().hex
@@ -181,7 +187,7 @@ def main():
                            "--model-path",model,"--split-root",args.old_root/"results/rolling_adaptive_v3",
                            "--cache-root",args.cache_root,"--prepared-root",staging,
                            "--markets",market,"--windows",str(window),"--device","cuda:0"]
-                    print("PREPARE",gpu,source,market,window,flush=True)
+                    status("PREPARE",gpu,source,market,window)
                     execute(cmd,logs/f"prepare_{source}_{market}_w{window}.log",gpu)
                     ready = staging/market/f"window_{window}"
                     prepared_manifest(ready,source)
@@ -217,7 +223,7 @@ def main():
                 if (dest/"metrics.json").exists():
                     if not (dest/"run_config.json").is_file():
                         raise ValueError(f"Unverified completion marker: {dest}")
-                    print("SKIP trained",job,flush=True)
+                    status("SKIP trained",job)
                     return
                 gpu = cards.get() if backend == "mlp" else "cpu"
                 try:
@@ -226,7 +232,7 @@ def main():
                            "--regressor",backend,"--market",market,"--window",str(window),"--method",method,
                            "--seed",str(seed),"--selection","rmse","--threads",str(args.threads),
                            "--device","cuda:0" if backend == "mlp" else "cpu"]
-                    print("TRAIN",gpu,job,flush=True)
+                    status("TRAIN",gpu,job)
                     execute(cmd,logs/f"{source}_{backend}_{market}_w{window}_{method}_s{seed}.log",gpu)
                 finally:
                     if backend == "mlp":

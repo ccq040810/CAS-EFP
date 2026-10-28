@@ -31,6 +31,7 @@ METHODS.update({
 })
 MECHANISM = list(METHODS)  # Preserve the completed seven-method experiment.
 METHODS["tsfm_point_confidence_asym_noC"] = (False, True, True)
+METHODS["plain_regressor"] = (False, False, False)
 
 
 def suite_methods(suite):
@@ -85,7 +86,9 @@ def job_config(args, manifest, method, seed):
                 upstream=manifest.get("upstream", "chronos2"),
                 hidden=args.hidden, lr=args.lr, batch_size=args.batch_size, epochs=args.epochs,
                 patience=args.patience, selection=args.selection, direction=manifest["direction"],
-                feature_names=[n for i,n in enumerate(names) if include_c or i != manifest["confidence_index"]],
+                feature_names=[n for i,n in enumerate(names)
+                               if (include_c or i != manifest["confidence_index"])
+                               and (method != "plain_regressor" or i != manifest["point_index"])],
                 prepared_sha256=manifest["arrays_sha256"])
 
 
@@ -212,7 +215,8 @@ def worker(args):
     conf_idx = manifest["confidence_index"]
     weights = training_weights(Xtr[:,conf_idx], args.method, args.weight_lambda, args.seed)
     names = manifest["feature_names"]
-    keep = [i for i in range(len(names)) if include_c or i != conf_idx]
+    keep = [i for i in range(len(names)) if (include_c or i != conf_idx)
+            and (args.method != "plain_regressor" or i != manifest["point_index"])]
     point_test = Xte[:,manifest["point_index"]].copy()
     conf_test = Xte[:,conf_idx].copy()
     Xtr, Xva, Xte = Xtr[:,keep], Xva[:,keep], Xte[:,keep]

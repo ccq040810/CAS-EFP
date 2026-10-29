@@ -11,7 +11,16 @@ sys.path.insert(0,str(ROOT))
 from scripts.run_mlp_transfer import read,write,sha
 from scripts.run_cas_all import run_lock
 from scripts.run_rolling_adaptive_experiment import DATASETS
-PROTOCOL='external_hourly_origin_24h_causal_LEAR_adapted_RNN_v1'
+PROTOCOL='external_hourly_origin_masked_24step_causal_LEAR_adapted_RNN_v2'
+
+
+def pack_targets(times,steps,values):
+    if not np.isin(steps,np.arange(24)).all():raise ValueError('Invalid horizon keys')
+    anchors=times-pd.to_timedelta(steps,unit='h')
+    origins=pd.DatetimeIndex(anchors.unique());row_ids=origins.get_indexer(anchors)
+    if pd.MultiIndex.from_arrays([row_ids,steps]).has_duplicates:raise ValueError('Duplicate origin/horizon')
+    Y=np.full((len(origins),24),np.nan);Y[row_ids,steps]=values
+    return origins,row_ids,Y
 
 
 def build_inputs(df,origins,target,covariates):
@@ -56,14 +65,14 @@ def prepare(args,market,window):
         if sha(reference/'features.npz')!=manifest['arrays_sha256']:raise ValueError('Reference checksum mismatch')
         for split,key in [('train','train'),('valid','valid'),('test','test')]:
             times=pd.DatetimeIndex([_to_shanghai(pd.Timestamp(t)) for t in manifest[split+'_time']])
-            Y=ref['y_'+split].reshape(-1,24)
-            matrix=np.asarray(times).reshape(-1,24);origins=pd.DatetimeIndex(matrix[:,0])
-            for h in range(24):
-                if not (pd.DatetimeIndex(matrix[:,h])==origins+pd.Timedelta(hours=h)).all():raise ValueError('Noncontiguous target horizon')
-            observed=df[target].reindex(times).to_numpy().reshape(-1,24)
-            np.testing.assert_allclose(observed,Y,rtol=1e-6,atol=1e-6)
+            yrows=ref['y_'+split]
+            steps=ref['X_'+split][:,manifest['feature_names'].index('h')].astype(int)-1
+            origins,row_ids,Y=pack_targets(times,steps,yrows)
+            observed=df[target].reindex(times).to_numpy()
+            np.testing.assert_allclose(observed,yrows,rtol=1e-6,atol=1e-6)
             seq,X,Z=build_inputs(df,origins,target,cov)
             arrays.update({f'seq_{split}':seq,f'X_{split}':X,f'Z_{split}':Z,f'y_{split}':Y})
+            arrays.update({f'row_ids_{split}':row_ids,f'steps_{split}':steps,f'yrows_{split}':yrows})
             metadata[split+'_time']=[str(t) for t in times]
     np.savez(folder/'inputs.npz',**arrays)
     write(folder/'manifest.json',dict(identity=identity,arrays_sha256=sha(folder/'inputs.npz'),covariates=cov,**metadata))
@@ -100,8 +109,9 @@ def worker(args):
         Xt=transform(X);Yt=np.arcsinh((y-ym)/ys);models=[]
         predictions={s:np.zeros_like(arrays['y_'+s],dtype=float) for s in ['valid','test']}
         for h in range(24):
-            alpha=LassoLarsIC(criterion='aic',max_iter=2500).fit(Xt,Yt[:,h]).alpha_
-            model=Lasso(alpha=alpha,max_iter=2500).fit(Xt,Yt[:,h]);models.append(model)
+            valid=np.isfinite(Yt[:,h])
+            alpha=LassoLarsIC(criterion='aic',max_iter=2500).fit(Xt[valid],Yt[valid,h]).alpha_
+            model=Lasso(alpha=alpha,max_iter=2500).fit(Xt[valid],Yt[valid,h]);models.append(model)
             for s in predictions:predictions[s][:,h]=np.sinh(model.predict(transform(arrays['X_'+s])))*ys[h]+ym[h]
             print('LEAR_HOUR',h,'alpha',alpha,flush=True)
         joblib.dump(dict(models=models,xm=xm,xs=xs,ym=ym,ys=ys),dest/'model.joblib')
@@ -109,12 +119,13 @@ def worker(args):
         from torch import nn
         torch.use_deterministic_algorithms(True)
         device=torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-        m=float(y.mean());sd=max(float(y.std()),1e-6)
+        m=float(np.nanmean(y));sd=max(float(np.nanstd(y)),1e-6)
         zm,zs=fit_scaler(arrays['Z_train'])
         def tensors(s):
             seq=torch.tensor((arrays['seq_'+s]-m)/sd,dtype=torch.float32)
             v=arrays['Z_'+s];v=np.where(np.isfinite(v),v,zm)
-            return seq,torch.tensor((v-zm)/zs,dtype=torch.float32),torch.tensor((arrays['y_'+s]-m)/sd,dtype=torch.float32)
+            mask=np.isfinite(arrays['y_'+s])
+            return seq,torch.tensor((v-zm)/zs,dtype=torch.float32),torch.tensor(np.where(mask,(arrays['y_'+s]-m)/sd,0),dtype=torch.float32),torch.tensor(mask,dtype=torch.float32)
         tensors_by_split={s:tensors(s) for s in ['train','valid','test']}
         class RNN(nn.Module):
             def __init__(self):
@@ -124,15 +135,17 @@ def worker(args):
                 _,state=self.rnn(a);return self.head(torch.cat([state[-1],b],dim=1))
         model=RNN().to(device);optimizer=torch.optim.Adam(model.parameters(),lr=.001)
         def predict(s):
-            model.eval();a,b,_=tensors_by_split[s]
+            model.eval();a,b,_,_=tensors_by_split[s]
             with torch.no_grad():return np.concatenate([model(a[i:i+512].to(device),b[i:i+512].to(device)).cpu().numpy() for i in range(0,len(a),512)])*sd+m
         best=float('inf');stale=0
         for epoch in range(1,151):
-            model.train();a,b,t=tensors_by_split['train'];order=torch.randperm(len(a))
+            model.train();a,b,t,mask=tensors_by_split['train'];order=torch.randperm(len(a))
             for idx in order.split(256):
-                optimizer.zero_grad();loss=((model(a[idx].to(device),b[idx].to(device))-t[idx].to(device))**2).mean();loss.backward()
+                optimizer.zero_grad();error=(model(a[idx].to(device),b[idx].to(device))-t[idx].to(device))**2
+                weights=mask[idx].to(device);loss=(error*weights).sum()/weights.sum();loss.backward()
                 nn.utils.clip_grad_norm_(model.parameters(),5.);optimizer.step()
-            pred=predict('valid');score=float(np.sqrt(np.mean((pred-arrays['y_valid'])**2)))
+            pred=predict('valid')[arrays['row_ids_valid'],arrays['steps_valid']]
+            score=float(np.sqrt(np.mean((pred-arrays['yrows_valid'])**2)))
             history.append(dict(epoch=epoch,valid_rmse=score));print('EPOCH',epoch,score,flush=True)
             if score<best:
                 best=score;stale=0;state={k:v.detach().cpu().clone() for k,v in model.state_dict().items()}
@@ -143,10 +156,11 @@ def worker(args):
         torch.save(dict(state=state,price_mean=m,price_std=sd,exog_median=zm,exog_scale=zs),dest/'model.pt')
     metrics=dict(**identity,market=args.market,window=args.window)
     for split,pred in predictions.items():
+        pred=pred[arrays['row_ids_'+split],arrays['steps_'+split]]
         if not np.isfinite(pred).all():raise ValueError('Nonfinite forecast')
-        error=pred-arrays['y_'+split]
+        error=pred-arrays['yrows_'+split]
         metrics[split+'_mae']=float(np.abs(error).mean());metrics[split+'_rmse']=float(np.sqrt(np.mean(error**2)))
-        pd.DataFrame(dict(time=meta[split+'_time'],y_true=arrays['y_'+split].ravel(),prediction=pred.ravel())).to_csv(dest/f'predictions_{split}.csv',index=False)
+        pd.DataFrame(dict(time=meta[split+'_time'],y_true=arrays['yrows_'+split],prediction=pred)).to_csv(dest/f'predictions_{split}.csv',index=False)
     pd.DataFrame(history).to_csv(dest/'history.csv',index=False);write(dest/'metrics.json',metrics)
     print(json.dumps(metrics),flush=True)
 
@@ -154,7 +168,7 @@ def worker(args):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--action',choices=['all','worker'],default='all')
-    p.add_argument('--output-root',type=Path,default=ROOT/'results/lear_rnn_external_20261029')
+    p.add_argument('--output-root',type=Path,default=ROOT/'results/lear_rnn_external_20261029_v2')
     p.add_argument('--reference-root',type=Path,default=ROOT/'results/cas_transfer_prepared_v2/cas_chronos2')
     p.add_argument('--model',choices=['lear_adapted','rnn']);p.add_argument('--market');p.add_argument('--window',type=int);p.add_argument('--seed',type=int)
     p.add_argument('--gpus',nargs='+',default=['0','1','2','3','4','5','6','7'])

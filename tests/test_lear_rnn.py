@@ -4,10 +4,18 @@ import numpy as np
 import pandas as pd
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from scripts.run_lear_rnn import build_inputs,fit_scaler
+from scripts.run_lear_rnn import build_inputs,fit_scaler,pack_targets
 
 
 class ExternalInputsTests(unittest.TestCase):
+    def test_filtered_horizon_rows_preserve_exact_targets(self):
+        a=pd.Timestamp('2024-01-01',tz='Asia/Shanghai')
+        steps=np.array([0,2,0,1,2]);values=np.array([1.,3.,4.,5.,6.])
+        times=pd.DatetimeIndex([a,a+pd.Timedelta(hours=2),a+pd.Timedelta(hours=1),a+pd.Timedelta(hours=2),a+pd.Timedelta(hours=3)])
+        origins,row_ids,Y=pack_targets(times,steps,values)
+        self.assertEqual(len(origins),2)
+        self.assertTrue(np.isnan(Y[0,1]))
+        np.testing.assert_array_equal(Y[row_ids,steps],values)
     def test_no_post_origin_target_and_equal_time_units(self):
         index=pd.date_range('2024-01-01',periods=400,freq='h',tz='Asia/Shanghai')
         df=pd.DataFrame({'y':np.arange(400.),'known':np.arange(400.)+1000},index=index)

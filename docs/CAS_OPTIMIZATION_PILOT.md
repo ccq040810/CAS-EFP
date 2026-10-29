@@ -1,5 +1,7 @@
 # 置信度加权LightGBM：训练/验证诊断
 
+后续强度核验入口pilot_cas_strength_controls.py仅检查残差表示：原alpha=2/c权重、同方向固定alpha=2、训练均值权重、打乱权重、普通L2。复用首轮12份模型，仅新增18份对照；方向/中心化/早停全部一致，仍不读取测试数组。输出results/cas_residual_strength_controls_20261029。均值匹配只保证全部训练候选权重均值相同，不保证每轮重点残差子集有效均值相同。
+
 中心化v2控制初始化：原生regression默认均值初始化、自定义objective默认0初始化，两者在有限迭代与早停下不等价。本轮对每种表示用训练目标均值中心化，所有候选boost_from_average=False、从0开始，预测加回中心。中性自定义损失与普通L2同初始条件的数值一致性另有测试。首轮未控制初始化的部分输出保留，不用于判断c增益；新输出results/cas_validation_pilot_centered_20261029。
 
 核心保留冻结Chronos-2、LightGBM、c进入损失。只用修复后的因果v2特征，不使用旧故障回放。新脚本不索引或物化X_test/y_test；已看过的旧测试成绩不用于候选选择。不会覆盖或重新生成LEAR/RNN结果。

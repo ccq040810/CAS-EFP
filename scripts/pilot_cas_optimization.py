@@ -13,6 +13,8 @@ from scripts.run_mlp_transfer import read,write,sha,ROLLOUT_PROTOCOL
 from scripts.run_cas_all import run_lock
 
 CANDIDATES=['ordinary','fixed_mild','cas_mild','cas_medium','matched_mean','shuffled','reliability_symmetric','original_cas']
+MODES=['absolute','residual']
+ORIGINAL_DIRECTION={'original_cas'}
 
 
 def coefficient(error,c,kind,direction,alpha,seed=42):
@@ -42,7 +44,7 @@ def main():
     p.add_argument('--output-root',type=Path,default=ROOT/'results/cas_validation_pilot_centered_20261029')
     args=p.parse_args();args.output_root.mkdir(parents=True,exist_ok=True)
     config=dict(protocol='causal_validation_only_equal_initialization_centered_weights_v2',
-        script_sha256=sha(__file__),candidates=CANDIDATES,modes=['absolute','residual'],
+        script_sha256=sha(__file__),candidates=CANDIDATES,modes=MODES,
         train_only_calibration_fraction=.2,calibration_probe_rounds=300,
         selection='ordinary_valid_rmse',seed=42,test_arrays_read=False,
         initialization='train_target_mean_centered_plus_boost_from_average_false',
@@ -90,7 +92,7 @@ def main():
                     old=read(dest/'validation_metrics.json')
                     if old['prepared_sha256']!=meta['arrays_sha256']:raise ValueError('Changed pilot source')
                     items.append(old);continue
-                d=(1 if np.median(y-point)>=0 else -1) if kind=='original_cas' else direction
+                d=(1 if np.median(y-point)>=0 else -1) if kind in ORIGINAL_DIRECTION else direction
                 alpha=1.25 if direction else 1.
                 # c is frozen; coefficients are piecewise constant in prediction.
                 def objective(pred,data):
@@ -108,23 +110,24 @@ def main():
                 row=dict(market=market,window=window,mode=mode,candidate=kind,
                     valid_mae=float(np.mean(np.abs(r))),valid_rmse=float(np.sqrt(np.mean(r*r))),
                     valid_bias=float(r.mean()),best_iteration=model.best_iteration,
-                    direction=d,alpha=2. if kind=='original_cas' else alpha,target_center=center,
+                    direction=d,alpha=2. if kind in ORIGINAL_DIRECTION else alpha,target_center=center,
                     prepared_sha256=meta['arrays_sha256'],test_evaluated=False)
                 write(dest/'validation_metrics.json',row)
                 pd.DataFrame(history['valid']).to_csv(dest/'history.csv',index=False)
                 model.save_model(str(dest/'model.txt'))
                 items.append(row);print('DONE',json.dumps(row),flush=True)
             return items,diagnostic
-        jobs=[(m,w,mode) for m in ['guangdong','reale_delu'] for w in [1,2,3] for mode in ['absolute','residual']]
+        jobs=[(m,w,mode) for m in ['guangdong','reale_delu'] for w in [1,2,3] for mode in MODES]
+        expected=len(jobs)*len(CANDIDATES)
         with ThreadPoolExecutor(max_workers=3) as pool:
             for future in as_completed([pool.submit(study,j) for j in jobs]):
                 result,d=future.result();rows.extend(result);diagnostics.append(d)
-                write(args.output_root/'progress.json',dict(completed=len(rows),expected=96,test_evaluated=False))
+                write(args.output_root/'progress.json',dict(completed=len(rows),expected=expected,test_evaluated=False))
         table=pd.DataFrame(rows);table.to_csv(args.output_root/'VALIDATION_ALL.csv',index=False)
         pd.DataFrame(diagnostics).to_csv(args.output_root/'TRAIN_ONLY_CONFIDENCE_DIAGNOSTICS.csv',index=False)
         report=table.groupby(['market','mode','candidate'],as_index=False).agg(valid_mae=('valid_mae','mean'),valid_rmse=('valid_rmse','mean'))
         report.to_csv(args.output_root/'VALIDATION_SUMMARY.csv',index=False)
-        write(args.output_root/'completion.json',dict(expected=96,completed=len(rows),complete=len(rows)==96,test_evaluated=False))
+        write(args.output_root/'completion.json',dict(expected=expected,completed=len(rows),complete=len(rows)==expected,test_evaluated=False))
         print(report.to_string(index=False),flush=True)
 
 

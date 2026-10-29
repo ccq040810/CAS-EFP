@@ -7,6 +7,15 @@ from scripts.pilot_cas_optimization import coefficient,chronological_calibration
 
 
 class OptimizationTests(unittest.TestCase):
+    def test_strong_controls_match_original_strength(self):
+        from scripts.pilot_cas_strength_controls import controlled_coefficient
+        r=np.array([-3.,-2.,-1.]);c=np.array([.1,.5,.9])
+        original=controlled_coefficient(r,c,'original_cas',1,2.)
+        np.testing.assert_array_equal(original,coefficient(r,c,'original_cas',1,2.))
+        mean=controlled_coefficient(r,c,'mean_alpha2',1,2.)
+        self.assertAlmostEqual(original.mean(),mean.mean())
+        shuffled=controlled_coefficient(r,c,'shuffle_alpha2',1,2.)
+        np.testing.assert_array_equal(np.sort(original),np.sort(shuffled))
     def test_neutral_custom_and_builtin_have_equal_initialization(self):
         import lightgbm as lgb
         rng=np.random.default_rng(4);X=rng.normal(size=(100,2));y=50+X[:,0]*2

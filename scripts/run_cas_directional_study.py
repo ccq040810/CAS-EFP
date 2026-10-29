@@ -7,7 +7,7 @@ development study, not final independent confirmation.
 from pathlib import Path
 from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor,as_completed
-import argparse,json,os,queue,shutil,subprocess,sys,uuid
+import argparse,json,os,queue,shutil,subprocess,sys,time,uuid
 import numpy as np
 import pandas as pd
 
@@ -20,6 +20,12 @@ PROTOCOL='causal_real_and_signed_target_ramp_development_v1'
 VARIANTS=['ordinary','fixed','cas','mean','shuffle']
 METHODS=['tree_only_rich','chronos_tree_absolute']+['original_residual_'+v for v in VARIANTS]+['rich_residual_'+v for v in VARIANTS+['gated_fixed','gated_cas','gated_shuffle']]
 CAS_METHODS=['original_residual_cas','rich_residual_cas','rich_residual_gated_cas']
+
+
+def local_times(values):
+    """Prepared naive wall times use the existing pipeline's Shanghai convention."""
+    index=pd.DatetimeIndex(pd.to_datetime(values))
+    return index.tz_localize('Asia/Shanghai') if index.tz is None else index.tz_convert('Asia/Shanghai')
 
 
 def cases():
@@ -122,7 +128,7 @@ def fit_case(args,case):
             X=z['X_'+s];y=z['y_'+s];ids=e['row_ids_'+s];steps=e['steps_'+s]
             np.testing.assert_allclose(y,e['yrows_'+s],rtol=0,atol=0)
             np.testing.assert_array_equal(X[:,hi].astype(int)-1,steps)
-            if not pd.DatetimeIndex(pd.to_datetime(meta[s+'_time'],utc=True)).equals(pd.DatetimeIndex(pd.to_datetime(em[s+'_time'],utc=True))):
+            if not local_times(meta[s+'_time']).equals(local_times(em[s+'_time'])):
                 raise ValueError('Time alignment changed')
             data[s]=(X,y)
             extra[s]=e['X_'+s][ids].astype(np.float32)
@@ -197,7 +203,7 @@ def fit_case(args,case):
         T=z['X_test'];yt=z['y_test'];te=e['X_test'][e['row_ids_test']].astype(np.float32)
         np.testing.assert_array_equal(yt,e['yrows_test'])
         np.testing.assert_array_equal(T[:,hi].astype(int)-1,e['steps_test'])
-        if not pd.DatetimeIndex(pd.to_datetime(meta['test_time'],utc=True)).equals(pd.DatetimeIndex(pd.to_datetime(em['test_time'],utc=True))):
+        if not local_times(meta['test_time']).equals(local_times(em['test_time'])):
             raise ValueError('Test time mismatch')
     rows=[]
     def score(method,pred,validation=None):
@@ -227,7 +233,7 @@ def fit_case(args,case):
         m=read(dest/'metrics.json');pred=pd.read_csv(dest/'predictions_test.csv')
         if m['prepared_sha256']!=em['arrays_sha256']:raise ValueError('External score source mismatch')
         np.testing.assert_allclose(pred.y_true,yt,rtol=1e-7,atol=1e-6)
-        if not pd.DatetimeIndex(pd.to_datetime(pred.time,utc=True)).equals(pd.DatetimeIndex(pd.to_datetime(meta['test_time'],utc=True))):
+        if not local_times(pred.time).equals(local_times(meta['test_time'])):
             raise ValueError('External test time mismatch')
         score(model,pred.prediction.to_numpy(),m)
     pd.DataFrame(rows).to_csv(folder/'ALL_RUNS.csv',index=False)
@@ -298,6 +304,12 @@ def main():
     if args.action=='case':
         case=next(c for c in cases() if c['id']==args.case_id)
         folder=args.output_root/'cases'/case['id'];folder.mkdir(parents=True,exist_ok=True)
+        # Implementation-only recovery can reuse an inference still running in an
+        # earlier process. Wait for its OS lock, then resume verified artifacts.
+        import fcntl
+        with (folder/'launcher.lock').open('a+') as handle:
+            fcntl.flock(handle.fileno(),fcntl.LOCK_EX)
+            fcntl.flock(handle.fileno(),fcntl.LOCK_UN)
         with run_lock(folder):fit_case(args,case)
         return
     if args.action=='summarize':summarize(args);return

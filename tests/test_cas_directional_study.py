@@ -3,10 +3,15 @@ import sys,unittest
 import numpy as np
 import pandas as pd
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
-from scripts.run_cas_directional_study import cases,signed_ramp,weights,METHODS,CAS_METHODS
+from scripts.run_cas_directional_study import cases,signed_ramp,weights,METHODS,CAS_METHODS,local_times
 
 
 class DirectionalStudyTests(unittest.TestCase):
+    def test_naive_prepared_time_is_shanghai_wall_time(self):
+        naive=['2024-01-08 00:00:00','2024-01-08 01:00:00']
+        aware=['2024-01-08 00:00:00+08:00','2024-01-08 01:00:00+08:00']
+        self.assertTrue(local_times(naive).equals(local_times(aware)))
+        self.assertTrue(local_times(naive).equals(local_times(pd.DatetimeIndex(aware).as_unit('us'))))
     def test_end_to_end_alignment_freeze_and_complete_method_coverage(self):
         import tempfile
         from types import SimpleNamespace

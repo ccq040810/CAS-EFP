@@ -39,12 +39,13 @@ def chronological_calibration(times,horizon):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--prepared-root',type=Path,default=ROOT/'results/cas_transfer_prepared_v2/cas_chronos2')
-    p.add_argument('--output-root',type=Path,default=ROOT/'results/cas_validation_pilot_20261029')
+    p.add_argument('--output-root',type=Path,default=ROOT/'results/cas_validation_pilot_centered_20261029')
     args=p.parse_args();args.output_root.mkdir(parents=True,exist_ok=True)
-    config=dict(protocol='causal_validation_only_residual_anchor_centered_weights_v1',
+    config=dict(protocol='causal_validation_only_equal_initialization_centered_weights_v2',
         script_sha256=sha(__file__),candidates=CANDIDATES,modes=['absolute','residual'],
         train_only_calibration_fraction=.2,calibration_probe_rounds=300,
         selection='ordinary_valid_rmse',seed=42,test_arrays_read=False,
+        initialization='train_target_mean_centered_plus_boost_from_average_false',
         tree=dict(learning_rate=.05,num_leaves=63,min_data_in_leaf=40,feature_fraction=.9,
                   bagging_fraction=.8,bagging_freq=5,min_gain_to_split=.08))
     with run_lock(args.output_root):
@@ -68,11 +69,12 @@ def main():
             X=X[:,keep];V=V[:,keep]
             base=point if mode=='residual' else np.zeros_like(point)
             bv=pv if mode=='residual' else np.zeros_like(pv)
-            target=y-base;valid_target=yv-bv
+            center=float(np.mean(y-base,dtype=np.float64))
+            target=y-base-center;valid_target=yv-bv-center
             params=dict(config['tree'],objective='regression',metric='None',seed=42,num_threads=4,
-                        deterministic=True,force_col_wise=True,verbosity=-1)
+                        deterministic=True,force_col_wise=True,verbosity=-1,boost_from_average=False)
             probe=lgb.train(params,lgb.Dataset(X[train],label=target[train]),num_boost_round=300)
-            error=y[cal]-(base[cal]+probe.predict(X[cal]))
+            error=y[cal]-(base[cal]+center+probe.predict(X[cal]))
             bias=float(np.median(error));threshold=.02*float(np.std(y[train]))
             direction=0 if abs(bias)<=threshold else (1 if bias>0 else -1)
             corr=float(spearmanr(c[cal],np.abs(error)).statistic)
@@ -101,12 +103,12 @@ def main():
                 model=lgb.train(current,lgb.Dataset(X,label=target),num_boost_round=2000,
                     valid_sets=[lgb.Dataset(V,label=valid_target)],valid_names=['valid'],feval=rmse,
                     callbacks=[lgb.early_stopping(100,verbose=False),lgb.record_evaluation(history)])
-                pred=bv+model.predict(V,num_iteration=model.best_iteration)
+                pred=bv+center+model.predict(V,num_iteration=model.best_iteration)
                 r=pred-yv
                 row=dict(market=market,window=window,mode=mode,candidate=kind,
                     valid_mae=float(np.mean(np.abs(r))),valid_rmse=float(np.sqrt(np.mean(r*r))),
                     valid_bias=float(r.mean()),best_iteration=model.best_iteration,
-                    direction=d,alpha=2. if kind=='original_cas' else alpha,
+                    direction=d,alpha=2. if kind=='original_cas' else alpha,target_center=center,
                     prepared_sha256=meta['arrays_sha256'],test_evaluated=False)
                 write(dest/'validation_metrics.json',row)
                 pd.DataFrame(history['valid']).to_csv(dest/'history.csv',index=False)

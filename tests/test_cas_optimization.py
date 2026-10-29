@@ -7,6 +7,17 @@ from scripts.pilot_cas_optimization import coefficient,chronological_calibration
 
 
 class OptimizationTests(unittest.TestCase):
+    def test_neutral_custom_and_builtin_have_equal_initialization(self):
+        import lightgbm as lgb
+        rng=np.random.default_rng(4);X=rng.normal(size=(100,2));y=50+X[:,0]*2
+        target=y-y.mean()
+        params=dict(objective='regression',metric='None',boost_from_average=False,
+            learning_rate=.05,num_leaves=5,min_data_in_leaf=5,num_threads=1,verbosity=-1,
+            deterministic=True,force_col_wise=True,seed=42)
+        ordinary=lgb.train(params,lgb.Dataset(X,label=target),num_boost_round=10)
+        def neutral(pred,data):return pred-data.get_label(),np.ones(len(pred))
+        other=lgb.train(dict(params,objective=neutral),lgb.Dataset(X,label=target),num_boost_round=10)
+        np.testing.assert_allclose(ordinary.predict(X),other.predict(X),atol=1e-8)
     def test_gradients_match_piecewise_weighted_loss(self):
         r=np.array([-3.,2.]);c=np.array([.1,.9]);eps=1e-4
         for kind in CANDIDATES:
